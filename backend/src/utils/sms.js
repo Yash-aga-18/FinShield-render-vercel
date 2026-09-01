@@ -63,17 +63,33 @@ const sendViaGateway = async (to, text) => {
     "Content-Type": "application/json",
   };
 
+  // The gateway has two faces with different REST paths: the phone app's
+  // LAN server (/message) and the manufacturer's cloud relay at
+  // api.sms-gate.app (/3rdparty/v1/messages, from its /docs OpenAPI spec).
+  // Everything else — Basic auth, the phoneNumbers/message body, the
+  // {id} state poll, the state names — is identical.
+  const cloudRelay = new URL(base).hostname === "api.sms-gate.app";
+  const messagesPath = cloudRelay ? "/3rdparty/v1/messages" : "/message";
+
   // Same body shape the gateway's local server expects (verified with curl):
-  // phoneNumbers is an array even for a single recipient.
+  // phoneNumbers is an array even for a single recipient. The message text
+  // differs per face: the cloud relay wants it structured (textMessage.text,
+  // verified with a live send) — the plain `message` string is deprecated
+  // there — while the LAN server only knows the plain string.
   const payload = {
     phoneNumbers: [to],
-    message: text,
+    ...(cloudRelay ? { textMessage: { text } } : { message: text }),
   };
   if (process.env.SMS_GATEWAY_DEVICE_ID) {
-    payload.deviceIds = [process.env.SMS_GATEWAY_DEVICE_ID];
+    // Field name differs between the two faces: the LAN server takes an
+    // array (deviceIds), the cloud relay a single string (deviceId).
+    if (cloudRelay) payload.deviceId = process.env.SMS_GATEWAY_DEVICE_ID;
+    else payload.deviceIds = [process.env.SMS_GATEWAY_DEVICE_ID];
   }
 
-  const res = await fetch(`${base}/message`, { method: "POST", headers, body: JSON.stringify(payload) });
+  // The cloud relay answers 202 Accepted for an enqueued message; the LAN
+  // server 200/201. res.ok covers all of them.
+  const res = await fetch(`${base}${messagesPath}`, { method: "POST", headers, body: JSON.stringify(payload) });
 
   if (!res.ok) {
     throw new Error(`SMS gateway rejected the send (${res.status}): ${await res.text()}`);
@@ -88,7 +104,7 @@ const sendViaGateway = async (to, text) => {
   if (messageId) {
     for (let i = 0; i < 3; i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 700));
-      const status = await fetch(`${base}/message/${encodeURIComponent(messageId)}`, { headers });
+      const status = await fetch(`${base}${messagesPath}/${encodeURIComponent(messageId)}`, { headers });
       if (!status.ok) break;
       const state = await status.json().catch(() => null);
       if (state?.state === "Failed") {
