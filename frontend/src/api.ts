@@ -67,10 +67,29 @@ function getCookie(name: string): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+/** Bootstraps the CSRF token cookie from the server. `cache: "no-store"` is
+    load-bearing: the endpoint's JSON body is constant, so any cached copy
+    (browser or CDN) carries no Set-Cookie and would starve the app of the
+    token it must read back from document.cookie. */
+async function bootstrapCsrfToken(): Promise<void> {
+  await fetch(`${API_BASE}/api/auth/csrf-token`, {
+    credentials: "include",
+    cache: "no-store",
+  });
+}
+
+/** Drops a stale csrf_token cookie (expired, or signed by a rotated secret)
+    so the next bootstrap actually reissues instead of no-op-ing against the
+    value the server still considers valid. The cookie is non-HttpOnly by
+    design, so this is allowed. */
+function clearCsrfCookie(): void {
+  document.cookie = "csrf_token=; Max-Age=0; Path=/; SameSite=Strict";
+}
+
 async function ensureCsrfToken(): Promise<string | null> {
   let token = getCookie("csrf_token");
   if (!token) {
-    await fetch(`${API_BASE}/api/auth/csrf-token`, { credentials: "include" });
+    await bootstrapCsrfToken();
     token = getCookie("csrf_token");
   }
   return token;
@@ -124,6 +143,21 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
   // replaying just repeats the challenge or re-submits the bad code, so those
   // go straight to the caller for the OTP modal / error display to handle.
   const payload = data as { error?: string } | null;
+
+  // Stale/unreadable CSRF cookie: the request was rejected by middleware
+  // BEFORE reaching the endpoint, so replaying has no side effects (an OTP
+  // attempt was NOT consumed). Clear the cookie, force a fresh bootstrap,
+  // and try exactly once more.
+  if (
+    res.status === 403 &&
+    retry &&
+    (payload?.error === "CSRF_TOKEN_MISSING" || payload?.error === "CSRF_TOKEN_INVALID")
+  ) {
+    clearCsrfCookie();
+    await bootstrapCsrfToken();
+    return api<T>(path, { ...options, retry: false });
+  }
+
   if (
     res.status === 401 &&
     retry &&

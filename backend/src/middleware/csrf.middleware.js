@@ -14,7 +14,11 @@ export const getCsrfCookieOptions = () => ({
   secure: isProduction,
   sameSite: isProduction ? "strict" : "lax",
   path: "/",
-  maxAge: 60 * 60 * 1000, // 1 hour
+  // Token lifetime tracks the refresh token: the CSRF cookie must outlive a
+  // session, because login itself needs it (preventing login CSRF). A short
+  // cookie forces constant re-bootstraps — each one a chance for a cache to
+  // swallow the Set-Cookie and starve the client of its token.
+  maxAge: 60 * 60 * 1000 * 24 * 7,
 });
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
@@ -88,6 +92,14 @@ export const issueCsrfToken = (req, res) => {
   // The token is never echoed in the JSON body: the client reads it directly
   // from the non-HttpOnly csrf_token cookie (double-submit cookie pattern).
   // Nothing sensitive is exposed to response inspection tools.
+
+  // This route MUST NOT be cached. The JSON body is constant, so its ETag is
+  // too — a browser or CDN revalidating against that ETag gets a 304 or a
+  // cached copy with Set-Cookie stripped, and the client's next POST then
+  // goes out without x-csrf-token (CSRF_TOKEN_MISSING on login, of all
+  // places). no-store keeps the Set-Cookie attached to every response.
+  res.set("Cache-Control", "private, no-store");
+
   return res.status(200).json({
     success: true,
     message: "CSRF token issued. Read it from the csrf_token cookie.",
