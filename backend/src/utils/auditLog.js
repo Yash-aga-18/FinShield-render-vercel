@@ -5,6 +5,7 @@ import AuditLog from "../models/auditLog.model.js";
 import { AUDIT_EVENTS, EVENT_SEVERITY } from "./auditEvents.js";
 import { getClientIp } from "./ip.js";
 import { redisClient } from "../config/redis.js";
+import { acquireRedisLock, releaseRedisLock } from "./redisLock.js";
 
 export { AUDIT_EVENTS };
 
@@ -237,17 +238,42 @@ let flushTimer = null;
 // chain order the hashes were computed in.
 let flushChain = Promise.resolve();
 
+// Cross-process flush lock. During a deploy overlap two instances of the
+// app run side by side for a while, and each used to keep its own in-memory
+// chain head — the instance with the stale head would append an entry that
+// silently skipped the other's, forking the hash chain (which the dashboard
+// then reports as "tampering"). Every flush now takes this lock AND reloads
+// the persisted head, so two writers can never extend different tips.
+const FLUSH_LOCK_KEY = "audit:chain:flush-lock";
+
 const flushBatch = async () => {
-  if (pendingEvents.length === 0) return;
+  if (pendingEvents.length === 0) return true;
 
   const batch = pendingEvents.splice(0, FLUSH_BATCH_SIZE);
 
-  try {
-    // First flush of this process: pick up where the persisted chain ended.
-    if (chainHead === undefined) {
-      const latest = await AuditLog.findOne({}, { hash: 1 }).sort({ _id: -1 });
-      chainHead = latest?.hash || GENESIS_HASH;
+  const lockToken = await acquireRedisLock(FLUSH_LOCK_KEY, {
+    ttlMs: 10000,
+    waitMs: 2000,
+  });
+
+  if (!lockToken) {
+    // Someone else is flushing and didn't release in time. Requeue and try
+    // again on the next tick rather than writing without the lock — an
+    // unlocked write is exactly the fork we're preventing.
+    pendingEvents.unshift(...batch);
+    if (process.env.NODE_ENV !== "test") {
+      console.warn("[FinShield Audit] Flush lock busy — batch requeued.");
     }
+    scheduleFlush();
+    return false;
+  }
+
+  try {
+    // Reload the persisted head on EVERY flush, not just the first: another
+    // process may have extended the chain since our last write, and hashing
+    // from a stale in-memory head would fork it.
+    const latest = await AuditLog.findOne({}, { hash: 1 }).sort({ _id: -1 });
+    chainHead = latest?.hash || GENESIS_HASH;
 
     for (const doc of batch) {
       doc.prevHash = chainHead;
@@ -268,16 +294,23 @@ const flushBatch = async () => {
         console.log(`[FinShield Audit] Event recorded: ${doc.event} (ID: ${doc._id})`);
       }
     }
+
+    // Keep draining while the queue is non-empty (e.g. after a burst).
+    if (pendingEvents.length > 0) {
+      scheduleFlush();
+    }
+    return true;
   } catch (error) {
     console.error(`[FinShield Audit] Batch write failed (${batch.length} events lost):`, error.message);
     // The in-memory head can't be trusted after a failed insert — reload
     // it from whatever actually persisted on the next flush.
     chainHead = undefined;
-  }
-
-  // Keep draining while the queue is non-empty (e.g. after a burst).
-  if (pendingEvents.length > 0) {
-    scheduleFlush();
+    if (pendingEvents.length > 0) {
+      scheduleFlush();
+    }
+    return true;
+  } finally {
+    await releaseRedisLock(FLUSH_LOCK_KEY, lockToken);
   }
 };
 
@@ -308,9 +341,15 @@ export const flushAuditLogs = async () => {
     clearTimeout(flushTimer);
     flushTimer = null;
   }
-  // Drain every batch synchronously in order.
+  // Drain every batch synchronously in order — unless a flush was requeued
+  // because the cross-process lock stayed busy, in which case stop rather
+  // than spin (the next scheduled flush picks the queue back up).
   while (pendingEvents.length > 0) {
-    await flushAuditQueue();
+    const progressed = await flushAuditQueue();
+    if (!progressed) {
+      console.warn("[FinShield Audit] Shutdown flush incomplete — lock contention.");
+      break;
+    }
   }
 };
 

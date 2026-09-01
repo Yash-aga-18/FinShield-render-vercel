@@ -28,34 +28,52 @@ export function Button({
 }
 
 /* Refresh control for table toolbars. The ↻ spins while the reload is in
-   flight and nudges around on hover, so the button reads as alive instead
-   of dead — the fetch is often fast enough that a text swap alone is
-   invisible. */
+   flight and nudges around on hover, and the busy state is held for a
+   minimum beat even when the fetch answers instantly — a sub-100ms text
+   swap is invisible, which is what made the button read as dead. */
+const REFRESH_HOLD_MS = 1500;
+
 export function RefreshButton({
   loading,
   onClick,
   label = "Refresh",
 }: {
   loading: boolean;
-  onClick: () => void;
+  onClick: () => void | Promise<void>;
   label?: string;
 }) {
+  const [holding, setHolding] = useState(false);
+  const busy = loading || holding;
+
+  const handleClick = async () => {
+    if (busy) return;
+    setHolding(true);
+    try {
+      await Promise.all([
+        Promise.resolve(onClick()).catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, REFRESH_HOLD_MS)),
+      ]);
+    } finally {
+      setHolding(false);
+    }
+  };
+
   return (
     <Button
       variant="outline"
       className="group px-3 py-1.5 text-xs"
-      onClick={onClick}
-      disabled={loading}
+      onClick={handleClick}
+      disabled={busy}
     >
       <span
         aria-hidden
         className={`inline-block leading-none transition-transform duration-300 ${
-          loading ? "animate-spin" : "group-hover:rotate-180"
+          busy ? "animate-spin" : "group-hover:rotate-180"
         }`}
       >
         ↻
       </span>
-      {loading ? "Refreshing…" : label}
+      {busy ? "Refreshing…" : label}
     </Button>
   );
 }
