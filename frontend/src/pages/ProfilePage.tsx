@@ -9,11 +9,13 @@ import {
   setEmailAddress,
   setPhoneNumber,
   updateProfile,
+  type DeletionSmsChallenge,
   type EmailCodeChallenge,
   type SmsOtpChallenge,
 } from "../api";
 import { Button, ConfirmDialog, ErrorNote, Field, PageTitle, PasswordField, Stamp } from "../ui";
 import { OtpInput, useCountdown, ResendButton } from "../otp";
+import { SmsConfirmDialog } from "../smsConfirm";
 import { useStepUp } from "../stepUp";
 
 /* Country dial codes for the phone form. India is the only ACTIVE choice for
@@ -266,15 +268,33 @@ export default function ProfilePage() {
     }
   }
 
+  // Self-deletion with a verified phone: the texted-code card that opens
+  // after the emailed step-up code was confirmed. Holds the step-1 response
+  // so the dialog can re-issue on resend.
+  const [deleteSms, setDeleteSms] = useState<DeletionSmsChallenge | null>(null);
+
+  // The account is gone server-side — clear local state and land on the
+  // sign-in screen. Shared by both the direct path (no phone) and the
+  // texted-code path.
+  async function finishDeletion() {
+    setDeleteSms(null);
+    await logout();
+    navigate("/login", { replace: true });
+  }
+
   async function onDelete() {
     setConfirmDelete(false);
     try {
-      // Irreversible: the backend may challenge with an emailed OTP first.
+      // Irreversible: the emailed code first (stepUp.run), then — when a
+      // verified phone is on file — a texted code as the final word.
       await stepUp.run(
         async () => {
-          await deleteProfile();
-          await logout();
-          navigate("/login", { replace: true });
+          const res = await deleteProfile();
+          if (res.requireOtp) {
+            setDeleteSms(res);
+          } else {
+            await finishDeletion();
+          }
         },
         "You're about to permanently delete your account.",
         "permanently delete your account",
@@ -453,6 +473,47 @@ export default function ProfilePage() {
         onConfirm={onDelete}
         onCancel={() => setConfirmDelete(false)}
       />
+      {deleteSms && (
+        <SmsConfirmDialog
+          overline="Account"
+          title="Enter your code"
+          body={(masked) =>
+            `We texted a ${rules.otpLength}-digit code to ${masked ?? "your number"} — the final check before your account is permanently deleted.`
+          }
+          confirmLabel="Delete account"
+          otpLength={rules.otpLength}
+          initial={deleteSms}
+          send={async () => {
+            // Wrapped in stepUp so a lapsed emailed window re-challenges
+            // (the dialog re-runs the action after the email code).
+            let latest: DeletionSmsChallenge = deleteSms;
+            await stepUp.run(
+              async () => {
+                const res = await deleteProfile();
+                if (!res.requireOtp) {
+                  // The phone was removed in the meantime — the deletion applied.
+                  await finishDeletion();
+                }
+                latest = res;
+              },
+              "You're about to permanently delete your account.",
+              "permanently delete your account",
+            );
+            return latest;
+          }}
+          verify={async (code) => {
+            await stepUp.run(
+              async () => {
+                await deleteProfile(code);
+                await finishDeletion();
+              },
+              "You're about to permanently delete your account.",
+              "permanently delete your account",
+            );
+          }}
+          onClose={() => setDeleteSms(null)}
+        />
+      )}
       <ConfirmDialog
         open={confirmRemovePhone}
         title="Remove your phone number?"

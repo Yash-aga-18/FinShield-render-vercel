@@ -6,9 +6,10 @@ import Session from "../models/session.model.js";
 import User from "../models/user.model.js";
 import { logAuditEvent, flushAuditLogs, verifyAuditChain, AUDIT_EVENTS } from "../utils/auditLog.js";
 import { acquireRedisLock, releaseRedisLock } from "../utils/redisLock.js";
-import { userSessionLockKey, toDisplayId, markSessionRevokedInRedis, sessionIdleCutoff } from "../utils/security.js";
+import { userSessionLockKey, toDisplayId, markSessionRevokedInRedis, sessionIdleCutoff, maskPhoneNumber } from "../utils/security.js";
 import { sendAdminActionEmail } from "../utils/mailer.js";
 import { numberFromEnv } from "../utils/env.js";
+import { issueOtp, verifyOtp, OtpError } from "../utils/otp.js";
 
 /* Email confirmation to the acting admin after a destructive action.
    Fire-and-forget: a mail provider outage must never fail the action,
@@ -431,6 +432,76 @@ export const adminDeleteUser = async (req, res, next) => {
         success: false,
         error: "CANNOT_DELETE_SELF",
         message: "Admins cannot delete their own account from the admin panel.",
+      });
+    }
+
+    // Destroying someone's account is the strongest action in the panel, so
+    // an admin with a verified phone confirms on BOTH channels, sequential:
+    // the emailed step-up code (route middleware above), then a texted code
+    // to the ADMIN's own phone — the phone is the last word before the
+    // record goes away. Step 1 (no smsCode) texts and returns; step 2 (with
+    // smsCode) verifies and deletes.
+    const admin = await User.findById(adminId).select("phoneNumber phoneVerified");
+    const smsDue = Boolean(admin?.phoneNumber && admin?.phoneVerified);
+
+    if (smsDue) {
+      const { smsCode } = req.body ?? {};
+
+      if (!smsCode) {
+        const otp = await issueOtp({ user: admin, purpose: "delete_sms", req, channel: "sms" });
+        if (otp.error) {
+          const status = otp.error === OtpError.COOLDOWN ? 429 : 503;
+          return res.status(status).json({
+            success: false,
+            error: otp.error,
+            message:
+              otp.error === OtpError.COOLDOWN
+                ? "A code was recently sent. Please wait before requesting another."
+                : "Text delivery is temporarily unavailable. Try again shortly.",
+            ...(otp.error === OtpError.COOLDOWN && otp.retryAfterSeconds
+              ? { retryAfterSeconds: otp.retryAfterSeconds }
+              : {}),
+          });
+        }
+        return res.status(200).json({
+          success: true,
+          requireOtp: true,
+          message: `We texted a code to ${maskPhoneNumber(admin.phoneNumber)}. Enter it to finish deleting this user.`,
+          maskedPhone: maskPhoneNumber(admin.phoneNumber),
+          expiresInSeconds: otp.expiresInSeconds,
+          resendCooldownSeconds: otp.resendCooldownSeconds,
+          ...(otp.deliveryWarning ? { deliveryWarning: otp.deliveryWarning } : {}),
+          ...(otp.devCode ? { devCode: otp.devCode } : {}),
+        });
+      }
+
+      const verified = await verifyOtp({ user: admin, purpose: "delete_sms", code: smsCode });
+      if (!verified.valid) {
+        logAuditEvent({
+          event: AUDIT_EVENTS.OTP_FAILED,
+          userId: adminId,
+          req,
+          metadata: { purpose: "delete_sms", reason: verified.error },
+        });
+        const statusByError = { INVALID: 401, EXPIRED: 400, LOCKED: 429 };
+        return res.status(statusByError[verified?.error] || 400).json({
+          success: false,
+          error: verified?.error ?? "INVALID",
+          message:
+            verified?.error === "INVALID"
+              ? "That code is incorrect."
+              : verified?.error === "LOCKED"
+                ? "Too many incorrect attempts. Request a new code."
+                : "That code has expired. Request a new one.",
+          ...(verified?.attemptsLeft !== undefined ? { attemptsLeft: verified.attemptsLeft } : {}),
+        });
+      }
+
+      logAuditEvent({
+        event: AUDIT_EVENTS.OTP_VERIFIED,
+        userId: adminId,
+        req,
+        metadata: { purpose: "delete_sms" },
       });
     }
 

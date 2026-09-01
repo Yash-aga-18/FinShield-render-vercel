@@ -27,6 +27,13 @@ import { durationFromEnv, numberFromEnv } from "../utils/env.js";
 import { NAME_MIN_LENGTH, NAME_MAX_LENGTH } from "../utils/namePolicy.js";
 import { PASSWORD_MIN_LENGTH, PASSWORD_MAX_LENGTH } from "../utils/passwordPolicy.js";
 import { ADMIN_LOGIN_REQUIRES_SMS, OTP_CODE_LENGTH } from "../utils/otp.js";
+import { purgeExpiredRegistrations } from "../utils/registrationSweep.js";
+import {
+  getPendingRegistration,
+  savePendingRegistration,
+  deletePendingRegistration,
+  pendingUser,
+} from "../utils/registrationPending.js";
 
 // How long a session's Redis cache entry lives before falling back to
 // MongoDB. Follows the refresh-token lifetime by default ("7d").
@@ -425,132 +432,86 @@ export const register = async (req, res) => {
 
     const { name: cleanName, email: normalizedEmail, password: cleanPassword } = parsed.data;
 
-    // +passwordHash because the schema hides it by default (select: false)
-    // and the duplicate-detection compare below needs it.
-    const existingUser = await User.findOne({ email: normalizedEmail }).select("+passwordHash");
+    // Unverified leftovers from before the deferred-creation flow (or a
+    // registration abandoned mid-flight) hold the email in the unique index;
+    // purge the sweep here keeps that from blocking anything.
+    await purgeExpiredRegistrations(req);
 
+    const existingUser = await User.findOne({ email: normalizedEmail }).select("isVerified");
+
+    if (existingUser?.isVerified) {
+      return res.status(409).json({ success: false, message: "An account with this email already exists" });
+    }
+
+    // An unverified record predating the deferred flow is dead weight —
+    // drop it; the fresh pending registration replaces whatever it held.
     if (existingUser) {
-      if (existingUser.isVerified) {
-        return res.status(409).json({ success: false, message: "An account with this email already exists" });
-      }
-
-      // An earlier attempt got as far as creating the account but never
-      // finished verification. Two very different situations hide here:
-      //
-      //   1. The user is CORRECTING their details (new name and/or password)
-      //      and retrying — re-registering over that husk is the user fixing
-      //      themselves, not a collision. Update the record and send a fresh
-      //      code (201).
-      //
-      //   2. The EXACT same details were submitted again — an accidental
-      //      double-submit, or a resend attempt through the wrong door.
-      //      Nothing changed, so this is a duplicate: answer 409 and point
-      //      at the OTP resend flow instead of minting another code.
-      const passwordUnchanged = existingUser.passwordHash
-        ? await bcrypt.compare(cleanPassword, existingUser.passwordHash)
-        : false;
-
-      if (existingUser.name === cleanName && passwordUnchanged) {
-        return res.status(409).json({
-          success: false,
-          error: "REGISTRATION_PENDING",
-          message:
-            "This email already has a registration awaiting verification. Check your inbox, or request a new code from the sign-in page.",
-        });
-      }
-
-      existingUser.name = cleanName;
-      existingUser.passwordHash = await bcrypt.hash(cleanPassword, BCRYPT_ROUNDS);
-      await existingUser.save();
-      const otp = await issueOtp({ user: existingUser, purpose: "registration", req });
-      return res.status(201).json({
-        success: true,
-        requiresVerification: true,
-        ...(otp.error
-          ? {
-              otpError: otp.error,
-              message: "Account created. Request a verification code to continue.",
-            }
-          : {
-              message: "Account created. We sent a verification code to your email.",
-              expiresInSeconds: otp.expiresInSeconds,
-              resendCooldownSeconds: otp.resendCooldownSeconds,
-              // Mirrors the login/step-up challenge responses: when mail
-              // delivery is console-only (dev) or the provider rejected the
-              // send, say so — and hand over the dev code so the flow stays
-              // completable without a mailbox.
-              ...(otp.deliveryWarning ? { deliveryWarning: otp.deliveryWarning } : {}),
-              ...(otp.devCode ? { devCode: otp.devCode } : {}),
-            }),
-        user: { id: existingUser._id, name: existingUser.name, email: existingUser.email, createdAt: existingUser.createdAt },
-      });
+      await User.deleteOne({ _id: existingUser._id });
     }
 
     const passwordHash = await bcrypt.hash(cleanPassword, BCRYPT_ROUNDS);
-    // Starts UNVERIFIED — the registration OTP email confirms ownership.
-    let user;
-    try {
-      user = await User.create({
-        name: cleanName,
-        email: normalizedEmail,
-        passwordHash,
-        isVerified: false,
-      });
 
-      // Send the first verification code (rate-limited by the OTP cooldown).
-      const otp = await issueOtp({ user, purpose: "registration", req });
-      if (!otp.error) {
-        return res.status(201).json({
-          success: true,
-          requiresVerification: true,
-          message: "Account created. We sent a verification code to your email.",
-          user: { id: user._id, name: user.name, email: user.email, createdAt: user.createdAt },
-          expiresInSeconds: otp.expiresInSeconds,
-          resendCooldownSeconds: otp.resendCooldownSeconds,
-          // Dev-only console-mail code / provider-rejection warning — same
-          // policy as the login and step-up challenges.
-          ...(otp.deliveryWarning ? { deliveryWarning: otp.deliveryWarning } : {}),
-          ...(otp.devCode ? { devCode: otp.devCode } : {}),
-        });
-      }
-      if (otp.error === "COOLDOWN") {
-        // Code throttled — the account is fine; the client can request a
-        // resend once the cooldown passes.
-        return res.status(201).json({
-          success: true,
-          requiresVerification: true,
-          otpError: otp.error,
-          message: "Account created. Request a verification code to continue.",
-          user: { id: user._id, name: user.name, email: user.email, createdAt: user.createdAt },
-        });
-      }
-      throw new Error(`OTP issue failed: ${otp.error}`);
-    } catch (createOrOtpError) {
-      // Lost the race: another registration with this email committed
-      // between our findOne and the create. The unique index is the real
-      // guarantee — this just turns the collision into an honest 409
-      // instead of a misleading "email delivery failed".
-      if (createOrOtpError?.code === 11000) {
-        return res.status(409).json({
-          success: false,
-          error: "EMAIL_ALREADY_EXISTS",
-          message: "An account with this email already exists",
-        });
-      }
-      // The account exists but the verification email could not be delivered
-      // (provider outage, invalid recipient). An unusable husk would trap the
-      // email behind "already exists" forever — roll the record back and say
-      // so plainly.
-      if (user) {
-        await User.findByIdAndDelete(user._id).catch(() => {});
-      }
-      console.error("Error registering user (email delivery failed):", createOrOtpError.message);
+    // NOTHING is written to the users collection until the emailed code is
+    // confirmed: the details live in Redis (same TTL as the code) and the
+    // account is created at verify time. An abandoned registration never
+    // appears in the database or the admin panel.
+    const stored = await savePendingRegistration({
+      name: cleanName,
+      email: normalizedEmail,
+      passwordHash,
+    });
+    if (!stored) {
+      return res.status(503).json({
+        success: false,
+        error: "REGISTRATION_UNAVAILABLE",
+        message: "Registration is temporarily unavailable. Please try again in a moment.",
+      });
+    }
+
+    // Cooldown and code are keyed on the email-derived pending subject, so
+    // the resend throttle works exactly as it did for real users.
+    const otp = await issueOtp({
+      user: pendingUser(normalizedEmail),
+      purpose: "registration",
+      req,
+      email: normalizedEmail,
+    });
+
+    if (otp.error === "COOLDOWN") {
+      // Code throttled — the details are held; the client can request a
+      // resend once the cooldown passes.
+      return res.status(201).json({
+        success: true,
+        requiresVerification: true,
+        otpError: otp.error,
+        retryAfterSeconds: otp.retryAfterSeconds,
+        message: "Your details are saved. Request a verification code to continue.",
+      });
+    }
+
+    if (otp.error) {
+      // The code (and its cooldown) were rolled back by issueOtp — drop the
+      // held details too so a retry starts clean.
+      await deletePendingRegistration(normalizedEmail);
+      console.error("Error registering user (email delivery failed):", otp.error);
       return res.status(502).json({
         success: false,
         error: "VERIFICATION_EMAIL_FAILED",
-        message: "Account created, but we couldn't deliver your verification email. Please try again in a moment.",
+        message: "We couldn't deliver your verification email. Please try again in a moment.",
       });
     }
+
+    return res.status(201).json({
+      success: true,
+      requiresVerification: true,
+      message: "We sent a verification code to your email. Your account is created once you confirm it.",
+      expiresInSeconds: otp.expiresInSeconds,
+      resendCooldownSeconds: otp.resendCooldownSeconds,
+      // Dev-only console-mail code / provider-rejection warning — same
+      // policy as the login and step-up challenge responses.
+      ...(otp.deliveryWarning ? { deliveryWarning: otp.deliveryWarning } : {}),
+      ...(otp.devCode ? { devCode: otp.devCode } : {}),
+    });
   } catch (error) {
     console.error("Error registering user:", error);
     return res.status(500).json({ success: false, message: "An error occurred while registering the user" });
@@ -621,6 +582,52 @@ export const login = async (req, res) => {
     const normalizedEmail = email.trim().toLowerCase();
     const user = await User.findOne({ email: normalizedEmail }).select("+passwordHash");
 
+    // No record, but a registration is still waiting on its code: the
+    // password proves the owner, so they get the "verify your email"
+    // landing (with a fresh code) instead of a misleading "no account".
+    if (!user) {
+      const pending = await getPendingRegistration(normalizedEmail);
+      if (pending) {
+        const pendingMatch = await bcrypt.compare(password, pending.passwordHash);
+        if (pendingMatch) {
+          const otp = await issueOtp({
+            user: pendingUser(normalizedEmail),
+            purpose: "registration",
+            req,
+            email: normalizedEmail,
+          });
+          return res.status(403).json({
+            success: false,
+            error: "EMAIL_NOT_VERIFIED",
+            message:
+              otp.error === "COOLDOWN"
+                ? "Verify your email to sign in. Your earlier code is still valid — check your inbox."
+                : "Verify your email to sign in. We've sent you a new code.",
+            email: normalizedEmail,
+            ...(otp.error ? { otpError: otp.error, retryAfterSeconds: otp.retryAfterSeconds } : {}),
+            // Console-mail code / provider-rejection warning (dev-only code echo).
+            ...(otp.deliveryWarning ? { deliveryWarning: otp.deliveryWarning } : {}),
+            ...(otp.devCode ? { devCode: otp.devCode } : {}),
+          });
+        }
+
+        // Right email, wrong password — same dead end as any other failed
+        // login, minus the account id (none exists yet).
+        await recordFailedLogin(req);
+        logAuditEvent({
+          event: AUDIT_EVENTS.LOGIN_FAILED,
+          userId: pendingUser(normalizedEmail)._id,
+          req,
+          metadata: { reason: "invalid_credentials" },
+        });
+        return res.status(401).json({
+          success: false,
+          error: "INVALID_CREDENTIALS",
+          message: "Wrong password entered.",
+        });
+      }
+    }
+
     if (!user || !user.passwordHash) {
       await bcrypt.compare(password, await getTimingEqualizerHash());
       await recordFailedLogin(req);
@@ -650,10 +657,20 @@ export const login = async (req, res) => {
       });
     }
 
-    // Unverified accounts (registered but never confirmed by OTP) must verify
-    // before any session is issued. Google-linked accounts are pre-verified.
+    // Unverified accounts are leftovers from before deferred creation (the
+    // current flow holds details in Redis and creates the account only at
+    // verify time). Convert one to the pending flow — save its details,
+    // drop the record — so the login screen can finish the registration
+    // exactly like the register screen does. Google-linked accounts are
+    // pre-verified.
     if (!user.isVerified) {
-      const otp = await issueOtp({ user, purpose: "registration", req });
+      await savePendingRegistration({
+        name: user.name,
+        email: user.email,
+        passwordHash: user.passwordHash,
+      });
+      await User.deleteOne({ _id: user._id });
+      const otp = await issueOtp({ user: pendingUser(user.email), purpose: "registration", req, email: user.email });
       return res.status(403).json({
         success: false,
         error: "EMAIL_NOT_VERIFIED",

@@ -65,7 +65,8 @@ export default function RegisterPage() {
     setBusy(true);
     try {
       const res = await register(name, email, password);
-      // Account created — now verify email ownership with the OTP.
+      // Details are held server-side — now prove the mailbox with the code;
+      // the account itself is only created once it's confirmed.
       setAwaitingOtp(true);
       setCooldown(res.resendCooldownSeconds ?? 45);
       setDevCode(res.devCode ?? null);

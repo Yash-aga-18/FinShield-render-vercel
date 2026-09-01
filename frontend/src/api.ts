@@ -9,6 +9,10 @@ export interface User {
   email: string;
   role?: "user" | "admin";
   hasPassword?: boolean;
+  /** Email-verified flag. Accounts only ever exist post-verification (the
+      record is created when the registration code is confirmed), so this is
+      true in practice; kept for completeness. */
+  isVerified?: boolean;
   /** Phone number, MASKED by the API (last 4 digits only, e.g. "+•••••••1111").
       Present once added and verified via SMS OTP. */
   phoneNumber?: string | null;
@@ -231,7 +235,18 @@ interface OtpDeliveryInfo {
 
 export function register(name: string, email: string, password: string) {
   return api<
-    { success: boolean; message: string; expiresInSeconds?: number; resendCooldownSeconds?: number } &
+    {
+      success: boolean;
+      message: string;
+      requiresVerification?: boolean;
+      expiresInSeconds?: number;
+      resendCooldownSeconds?: number;
+      /** Set when the register call was throttled by the OTP cooldown (a
+          re-registration of the same email within the window): the details
+          are still held and the earlier code remains valid. */
+      otpError?: string;
+      retryAfterSeconds?: number;
+    } &
       OtpDeliveryInfo
   >("/api/auth/register", {
     method: "POST",
@@ -358,8 +373,39 @@ export async function updateProfile(payload: { name?: string; email?: string }) 
   return { ...res, user: normalizeUser(res.user) };
 }
 
-export function deleteProfile() {
-  return api<{ success: boolean }>("/api/users/me", { method: "DELETE", body: {} });
+/** The two-channel challenge half of a deletion response: when an account
+    (or the acting admin) has a verified phone, step 1 texts a code and
+    returns this instead of deleting. */
+export interface DeletionSmsChallenge {
+  success: boolean;
+  requireOtp?: boolean;
+  message: string;
+  maskedPhone?: string;
+  expiresInSeconds?: number;
+  resendCooldownSeconds?: number;
+  devCode?: string;
+  deliveryWarning?: string;
+}
+
+/** Delete your own account. Step 1 (no smsCode): the emailed step-up code is
+    verified by middleware, and when a verified phone is on file a texted
+    code is issued and returned as a challenge. Step 2 (with smsCode): the
+    text is verified and the account is deleted. Accounts without a phone
+    delete directly in step 1. */
+export function deleteProfile(smsCode?: string) {
+  return api<DeletionSmsChallenge>("/api/users/me", {
+    method: "DELETE",
+    body: smsCode !== undefined ? { smsCode } : {},
+  });
+}
+
+/** Admin: delete a user. Same two-channel shape as deleteProfile, but the
+    texted code goes to the ADMIN's verified phone (they are the actor). */
+export function adminDeleteUser(userId: string, smsCode?: string) {
+  return api<DeletionSmsChallenge>(
+    `/api/admin/users/${encodeURIComponent(userId)}`,
+    { method: "DELETE", body: smsCode !== undefined ? { smsCode } : {} },
+  );
 }
 
 /** Step 1 (no smsCode): validates the passwords and, when a verified phone
@@ -680,13 +726,6 @@ export function adminRevokeUserSessions(userId: string) {
   return api<{ success: boolean; message: string }>(
     `/api/admin/users/${encodeURIComponent(userId)}/revoke-sessions`,
     { method: "POST", body: {} },
-  );
-}
-
-export function adminDeleteUser(userId: string) {
-  return api<{ success: boolean; message: string }>(
-    `/api/admin/users/${encodeURIComponent(userId)}`,
-    { method: "DELETE", body: {} },
   );
 }
 

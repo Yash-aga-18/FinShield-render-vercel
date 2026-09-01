@@ -4,8 +4,10 @@ import {
   adminDeleteUser,
   adminRevokeUserSessions,
   getAllUsers,
+  getInputRules,
   getUserActivity,
   type AdminUserSort,
+  type DeletionSmsChallenge,
   type User,
   type UserActivity,
 } from "../api";
@@ -22,6 +24,7 @@ import {
   useToast,
 } from "../ui";
 import { useStepUp } from "../stepUp";
+import { SmsConfirmDialog } from "../smsConfirm";
 /* Admin panel — user management: list all users with active-session,
    last-login, and risk columns, sortable and searchable, view a per-user
    activity log, revoke sessions, or delete the user. Confirmation dialogs
@@ -280,6 +283,13 @@ export default function AdminUsersPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<User | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
+  // Texted-code challenge for deleting a user when the acting admin has a
+  // verified phone — opens after the emailed step-up code was confirmed.
+  // Keeps its own copy of the target because the confirm dialog's target is
+  // cleared as soon as it closes.
+  const [deleteSms, setDeleteSms] = useState<{ target: User; challenge: DeletionSmsChallenge } | null>(null);
+  // Code length follows the backend's OTP_CODE_LENGTH env (cached request).
+  const [otpLength, setOtpLength] = useState(6);
   const [roleTarget, setRoleTarget] = useState<User | null>(null);
   const [activityTarget, setActivityTarget] = useState<User | null>(null);
   const [activityRefresh, setActivityRefresh] = useState(0);
@@ -321,6 +331,14 @@ export default function AdminUsersPage() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageSize, sort, order, search]);
+
+  // Code length follows the backend's OTP_CODE_LENGTH env — needed by the
+  // texted-code dialog when a deletion is dual-channel.
+  useEffect(() => {
+    getInputRules()
+      .then((r) => setOtpLength(r.otpCodeLength ?? 6))
+      .catch(() => {});
+  }, []);
 
   // Debounce the search box: wait for a pause in typing before querying.
   useEffect(() => {
@@ -429,9 +447,15 @@ export default function AdminUsersPage() {
     try {
       await stepUp.run(
         async () => {
-          await adminDeleteUser(target.id);
-          setUsers((prev) => prev.filter((u) => u.id !== target.id));
-          showToast(`Deleted ${target.name} (${target.email}) and all their sessions.`);
+          // Dual-channel: when the acting admin has a verified phone, the
+          // emailed step-up code is followed by a texted one — the texted
+          // code goes to the ADMIN's phone, the final word on deletion.
+          const res = await adminDeleteUser(target.id);
+          if (res.requireOtp) {
+            setDeleteSms({ target, challenge: res });
+          } else {
+            applyDeleted(target, res.message);
+          }
         },
         `You're about to permanently delete ${target.email}.`,
         `delete the user ${target.email} (account id ${target.id})`,
@@ -441,6 +465,15 @@ export default function AdminUsersPage() {
     } finally {
       setBusyId(null);
     }
+  }
+
+  // A deletion went through (either channel path) — update the list, close
+  // any open drawer for that user, confirm with a toast.
+  function applyDeleted(target: User, message: string) {
+    setUsers((prev) => prev.filter((u) => u.id !== target.id));
+    setDeleteSms(null);
+    setActivityTarget((prev) => (prev && prev.id === target.id ? null : prev));
+    showToast(message || `Deleted ${target.name} (${target.email}) and all their sessions.`);
   }
 
   const selectClass =
@@ -721,6 +754,43 @@ export default function AdminUsersPage() {
         onConfirm={onDeleteUser}
         onCancel={() => setDeleteTarget(null)}
       />
+      {deleteSms && (
+        <SmsConfirmDialog
+          overline="Admin panel"
+          title="Enter your code"
+          body={(masked) =>
+            `We texted a ${otpLength}-digit code to ${masked ?? "your number"} — the final check before ${deleteSms.target.email} is permanently deleted.`
+          }
+          confirmLabel="Delete user"
+          otpLength={otpLength}
+          initial={deleteSms.challenge}
+          send={async () => {
+            // Wrapped in stepUp so a lapsed emailed window re-challenges.
+            let latest: DeletionSmsChallenge = deleteSms.challenge;
+            await stepUp.run(
+              async () => {
+                const res = await adminDeleteUser(deleteSms.target.id);
+                if (!res.requireOtp) applyDeleted(deleteSms.target, res.message);
+                latest = res;
+              },
+              `You're about to permanently delete ${deleteSms.target.email}.`,
+              `delete the user ${deleteSms.target.email} (account id ${deleteSms.target.id})`,
+            );
+            return latest;
+          }}
+          verify={async (code) => {
+            await stepUp.run(
+              async () => {
+                const res = await adminDeleteUser(deleteSms.target.id, code);
+                applyDeleted(deleteSms.target, res.message);
+              },
+              `You're about to permanently delete ${deleteSms.target.email}.`,
+              `delete the user ${deleteSms.target.email} (account id ${deleteSms.target.id})`,
+            );
+          }}
+          onClose={() => setDeleteSms(null)}
+        />
+      )}
       {stepUp.dialog}
       {toast}
     </div>

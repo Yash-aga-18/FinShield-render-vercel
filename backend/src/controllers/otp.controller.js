@@ -18,6 +18,12 @@ import {
 } from "../utils/otp.js";
 import { provisionUserSession } from "./auth.controller.js";
 import { maskPhoneNumber } from "../utils/security.js";
+import {
+  getPendingRegistration,
+  savePendingRegistration,
+  deletePendingRegistration,
+  pendingUser,
+} from "../utils/registrationPending.js";
 
 /* ============================================================
    COMMON
@@ -43,16 +49,19 @@ const otpFailureResponse = (res, error, extra = {}) => {
 
 /* ============================================================
    REGISTRATION OTP
-   New accounts start unverified and must confirm email ownership
-   before they can sign in.
+   Registration holds its details in Redis (email-derived key, same TTL as
+   the code) and creates the account ONLY when the emailed code is
+   confirmed — an abandoned registration never exists in the database.
    ============================================================ */
 
 export const resendRegistrationOtp = async (req, res) => {
   try {
     const { email } = req.body;
-    const user = await User.findOne({ email: String(email || "").toLowerCase().trim() });
+    const normalizedEmail = String(email || "").toLowerCase().trim();
 
-    if (!user || user.isVerified) {
+    const pending = await getPendingRegistration(normalizedEmail);
+
+    if (!pending) {
       // Never reveal whether the email exists.
       return res.status(200).json({
         success: true,
@@ -60,8 +69,16 @@ export const resendRegistrationOtp = async (req, res) => {
       });
     }
 
-    const result = await issueOtp({ user, purpose: "registration", req });
+    const result = await issueOtp({
+      user: pendingUser(normalizedEmail),
+      purpose: "registration",
+      req,
+      email: normalizedEmail,
+    });
     if (result.error) return otpFailureResponse(res, result.error, result);
+
+    // The details must outlive the fresh code — re-arm their TTL.
+    await savePendingRegistration(pending);
 
     return res.status(200).json({
       success: true,
@@ -82,10 +99,11 @@ export const resendRegistrationOtp = async (req, res) => {
 export const verifyRegistrationOtp = async (req, res) => {
   try {
     const { email, code } = req.body;
+    const normalizedEmail = String(email || "").toLowerCase().trim();
 
-    const user = await User.findOne({ email: String(email || "").toLowerCase().trim() });
+    const pending = await getPendingRegistration(normalizedEmail);
 
-    if (!user || user.isVerified) {
+    if (!pending) {
       return res.status(400).json({
         success: false,
         error: "INVALID_REQUEST",
@@ -93,19 +111,49 @@ export const verifyRegistrationOtp = async (req, res) => {
       });
     }
 
-    const result = await verifyOtp({ user, purpose: "registration", code });
+    const subject = pendingUser(normalizedEmail);
+    const result = await verifyOtp({ user: subject, purpose: "registration", code });
     if (!result.valid) {
       logAuditEvent({
         event: AUDIT_EVENTS.OTP_FAILED,
-        userId: user._id,
+        userId: subject._id,
         req,
         metadata: { purpose: "registration", reason: result.error },
       });
       return otpFailureResponse(res, result.error, result);
     }
 
-    user.isVerified = true;
-    await user.save();
+    // NOW the account is created — the code proved the mailbox. createdAt
+    // is the moment of verification, which is the moment the account began
+    // to exist. A legacy unverified record may still hold the email in the
+    // unique index; it is replaced, anything else is an honest collision.
+    let user;
+    try {
+      user = await User.create({
+        name: pending.name,
+        email: pending.email,
+        passwordHash: pending.passwordHash,
+        isVerified: true,
+      });
+    } catch (createError) {
+      if (createError?.code !== 11000) throw createError;
+      const existing = await User.findOne({ email: pending.email });
+      if (!existing || existing.isVerified) {
+        return res.status(409).json({
+          success: false,
+          error: "EMAIL_ALREADY_EXISTS",
+          message: "An account with this email already exists",
+        });
+      }
+      existing.name = pending.name;
+      existing.passwordHash = pending.passwordHash;
+      existing.isVerified = true;
+      await existing.save();
+      user = existing;
+    }
+
+    // The held details are now a real record — drop them.
+    await deletePendingRegistration(normalizedEmail);
 
     logAuditEvent({
       event: AUDIT_EVENTS.OTP_VERIFIED,

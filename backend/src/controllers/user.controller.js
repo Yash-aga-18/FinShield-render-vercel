@@ -16,6 +16,7 @@ import { getRiskLevel } from "../utils/risk.js";
 import { NAME_MIN_LENGTH, NAME_MAX_LENGTH } from "../utils/namePolicy.js";
 import { PASSWORD_MIN_LENGTH, PASSWORD_MAX_LENGTH } from "../utils/passwordPolicy.js";
 import { issueOtp, verifyOtp, verifyStepUpToken, stepUpCookieName, OtpError, OTP_TTL_SECONDS } from "../utils/otp.js";
+import { purgeExpiredRegistrations } from "../utils/registrationSweep.js";
 
 // BCRYPT_ROUNDS: password hashing cost (default 12). Each +1 roughly
 // doubles the hash time — keep auth.controller.js's value in sync via .env.
@@ -1217,6 +1218,65 @@ export const deleteUserProfile = async (req, res, next) => {
     }
 
     try {
+      // Deletion is the one action that cannot be undone, so an account with
+      // a verified phone confirms on BOTH channels, sequential: the emailed
+      // step-up code (route middleware above), then a texted code — the
+      // phone is the last word before the record goes away. Step 1 (no
+      // smsCode) texts the code and returns; step 2 (with smsCode) verifies
+      // and deletes. Accounts without a phone apply directly.
+      const profile = await User.findById(userId).select("phoneNumber phoneVerified");
+      const smsDue = Boolean(profile?.phoneNumber && profile?.phoneVerified);
+
+      if (smsDue) {
+        const { smsCode } = req.body ?? {};
+
+        if (!smsCode) {
+          const otp = await issueOtp({ user: profile, purpose: "delete_sms", req, channel: "sms" });
+          if (otp.error) {
+            const status = otp.error === OtpError.COOLDOWN ? 429 : 503;
+            return res.status(status).json({
+              success: false,
+              error: otp.error,
+              message:
+                otp.error === OtpError.COOLDOWN
+                  ? "A code was recently sent. Please wait before requesting another."
+                  : "Text delivery is temporarily unavailable. Try again shortly.",
+              ...(otp.error === OtpError.COOLDOWN && otp.retryAfterSeconds
+                ? { retryAfterSeconds: otp.retryAfterSeconds }
+                : {}),
+            });
+          }
+          return res.status(200).json({
+            success: true,
+            requireOtp: true,
+            message: `We texted a code to ${maskPhoneNumber(profile.phoneNumber)}. Enter it to finish deleting your account.`,
+            maskedPhone: maskPhoneNumber(profile.phoneNumber),
+            expiresInSeconds: otp.expiresInSeconds,
+            resendCooldownSeconds: otp.resendCooldownSeconds,
+            ...(otp.deliveryWarning ? { deliveryWarning: otp.deliveryWarning } : {}),
+            ...(otp.devCode ? { devCode: otp.devCode } : {}),
+          });
+        }
+
+        const verified = await verifyOtp({ user: profile, purpose: "delete_sms", code: smsCode });
+        if (!verified.valid) {
+          logAuditEvent({
+            event: AUDIT_EVENTS.OTP_FAILED,
+            userId,
+            req,
+            metadata: { purpose: "delete_sms", reason: verified.error },
+          });
+          return updateCodeFailureResponse(res, verified);
+        }
+
+        logAuditEvent({
+          event: AUDIT_EVENTS.OTP_VERIFIED,
+          userId,
+          req,
+          metadata: { purpose: "delete_sms" },
+        });
+      }
+
       const sessions = await Session.find({ userId, revokedAt: null }).select("sessionId").lean();
       const sessionIds = sessions.map((session) => session.sessionId);
 
@@ -1261,6 +1321,11 @@ export const deleteUserProfile = async (req, res, next) => {
  */
 export const getAllUsers = async (req, res, next) => {
   try {
+    // The list is where registration husks (accounts that never finished
+    // OTP verification) would otherwise pile up — sweep them here so the
+    // admin panel only ever shows accounts that are old enough to matter.
+    await purgeExpiredRegistrations(req);
+
     const page = Math.max(1, Number.parseInt(req.query?.page, 10) || 1);
     const limit = Math.min(
       numberFromEnv("USERS_LIST_MAX_LIMIT", 100),
