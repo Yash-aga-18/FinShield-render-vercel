@@ -8,7 +8,7 @@
   },
 "scripts": {
   
-  "start": "node --env-file=.env src/server.js",
+  "start": "node src/server.js",
   "dev": "nodemon --env-file=.env src/server.js",
 
   "test":   "node --env-file=./tests/.env.test --test --test-concurrency=1",
