@@ -536,11 +536,17 @@ export default function AdminUsersPage() {
       ) : (
         <>
           <div className="overflow-x-auto rounded-sm border border-rule bg-paper-raised">
-            <table className="w-full min-w-[1000px] text-sm">
+            {/* Name and Email are frozen on the left: the table scrolls
+                horizontally under them (sticky columns), so identity stays
+                visible while checking the Logs/role/revoke actions on the
+                right. Fixed widths + truncation keep the two frozen lanes
+                aligned — a widening column would push the second lane's
+                sticky offset out of place. */}
+            <table className="w-full min-w-[1050px] text-sm">
               <thead>
                 <tr className="border-b border-rule text-left text-xs font-semibold tracking-[0.08em] text-ink-faint uppercase">
-                  <th className="px-4 py-3">Name</th>
-                  <th className="px-4 py-3">Email</th>
+                  <th className="sticky left-0 z-20 w-44 min-w-44 bg-paper-raised px-4 py-3">Name</th>
+                  <th className="sticky left-44 z-20 w-56 min-w-56 border-r border-rule bg-paper-raised px-4 py-3">Email</th>
                   <th className="px-4 py-3">Role</th>
                   <th className="px-4 py-3">Registered</th>
                   <th className="px-4 py-3">Last login</th>
@@ -555,9 +561,12 @@ export default function AdminUsersPage() {
                 const online = (u.activeSessions ?? 0) > 0;
                 return (
                   <tr key={u.id} className="border-b border-rule last:border-b-0">
-                    <td className="px-4 py-3 text-ink">
+                    <td
+                      className="sticky left-0 z-10 max-w-44 bg-paper-raised px-4 py-3 text-ink"
+                      title={u.name}
+                    >
                       <button
-                        className="text-left transition-colors hover:text-accent"
+                        className="block max-w-full truncate text-left transition-colors hover:text-accent"
                         onClick={() => setActivityTarget(u)}
                         title="View activity log"
                       >
@@ -565,7 +574,12 @@ export default function AdminUsersPage() {
                       </button>
                       {isSelf && <span className="ml-2 text-xs text-ink-faint">(you)</span>}
                     </td>
-                    <td className="px-4 py-3 text-ink-soft">{u.email}</td>
+                    <td
+                      className="sticky left-44 z-10 max-w-56 border-r border-rule bg-paper-raised px-4 py-3 text-ink-soft"
+                      title={u.email}
+                    >
+                      <span className="block truncate">{u.email}</span>
+                    </td>
                     <td className="px-4 py-3">
                       <Stamp tone={u.role === "admin" ? "warn" : "neutral"}>
                         {u.role ?? "user"}
