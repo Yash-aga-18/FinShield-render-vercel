@@ -847,7 +847,11 @@ export const completeGoogleAuthentication = (req, res, next) => {
 
   if (!savedState || !incomingState) {
     logAuditEvent({ event: AUDIT_EVENTS.LOGIN_FAILED, req, metadata: { reason: "oauth_state_missing", provider: "google" } });
-    return res.status(400).json({ success: false, error: "INVALID_OAUTH_STATE", message: "OAuth state parameter missing" });
+    // The callback is only ever hit by a browser (a redirect from Google) —
+    // raw JSON here rendered as a wall of text on the phone screen. Land the
+    // user on the login form with a readable reason instead.
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5174";
+    return res.redirect(`${frontendUrl}/login?error=oauth_state`);
   }
 
   const savedBuffer = Buffer.from(savedState, "utf-8");
@@ -855,7 +859,8 @@ export const completeGoogleAuthentication = (req, res, next) => {
 
   if (savedBuffer.length !== incomingBuffer.length || !crypto.timingSafeEqual(savedBuffer, incomingBuffer)) {
     logAuditEvent({ event: AUDIT_EVENTS.LOGIN_FAILED, req, metadata: { reason: "oauth_state_mismatch", provider: "google" } });
-    return res.status(400).json({ success: false, error: "INVALID_OAUTH_STATE", message: "OAuth state mismatch detected" });
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5174";
+    return res.redirect(`${frontendUrl}/login?error=oauth_state`);
   }
 
   return passport.authenticate("google", { session: false }, async (error, user) => {

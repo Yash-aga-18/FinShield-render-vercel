@@ -16,9 +16,25 @@ import { OtpStep } from "../otp";
 /* Editorial split layout: brand statement on the paper-sunken left panel,
    the form on the right. Serif masthead, hairline rules. */
 
-export function GoogleButton({ label }: { label: string }) {  return (
+/* The Google OAuth redirect_uri is registered for exactly one origin — the
+   Vercel deployment — in the Google Cloud Console, and the state cookie must
+   land on that same origin or the callback arrives state-less
+   ("OAuth state parameter missing" — exactly what signing in from the
+   Netlify mirror or the bare backend host produced). So on any other host,
+   the button routes the user through the registered origin first; there the
+   cookie, the callback and the resulting session all live. In dev the
+   Vite proxy already shares the localhost cookie jar, so same-origin is
+   correct there. */
+const OAUTH_START_ORIGIN = "https://finshield-frontend-xi.vercel.app";
+
+export function GoogleButton({ label }: { label: string }) {  const googleHref = import.meta.env.DEV
+    ? "/api/auth/google"
+    : window.location.origin === OAUTH_START_ORIGIN
+      ? "/api/auth/google"
+      : `${OAUTH_START_ORIGIN}/api/auth/google`;
+  return (
     <a
-      href="/api/auth/google"
+      href={googleHref}
       className="inline-flex w-full items-center justify-center gap-3 rounded-sm border border-rule-strong bg-paper-raised px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-paper-sunken"
     >
       <svg width="17" height="17" viewBox="0 0 48 48" aria-hidden="true">
@@ -142,8 +158,13 @@ export default function LoginPage() {
 
   // Surface OAuth failure (redirected back by the backend) as a form error.
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("error") === "oauth_failed") {
+    const oauthError = new URLSearchParams(window.location.search).get("error");
+    if (oauthError === "oauth_failed") {
       setError("Google sign-in failed. Please try again.");
+    } else if (oauthError === "oauth_state") {
+      setError("Your Google sign-in session expired — the page was open too long before you finished. Please try again.");
+    } else if (oauthError === "admin_oauth_blocked") {
+      setError("Admin accounts sign in with email and password — Google sign-in is disabled for them.");
     }
   }, []);
 
