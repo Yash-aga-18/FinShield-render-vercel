@@ -776,6 +776,14 @@ export const beginGoogleAuthentication = (req, res, next) => {
 
   res.cookie(oauthStateCookieName(), state, {
     ...baseOptions,
+    // SameSite must be Lax, NOT the base policy's Strict: the OAuth callback
+    // is a cross-site redirect (accounts.google.com → our domain), and
+    // browsers withhold Strict cookies on cross-site navigations — the
+    // callback would always arrive state-less ("OAuth state parameter
+    // missing"). Lax still blocks the cookie on cross-site POSTs, and the
+    // state nonce itself (random 32 bytes, 10-minute TTL) is what actually
+    // defeats CSRF here.
+    sameSite: "lax",
     // OAUTH_STATE_TTL: how long the CSRF state cookie is valid
     // ("10m" default — just enough to finish the Google round-trip).
     maxAge: durationFromEnv("OAUTH_STATE_TTL", 10 * 60) * 1000,
