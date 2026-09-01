@@ -87,33 +87,43 @@ const sendViaGateway = async (to, text) => {
     else payload.deviceIds = [process.env.SMS_GATEWAY_DEVICE_ID];
   }
 
-  // The cloud relay answers 202 Accepted for an enqueued message; the LAN
-  // server 200/201. res.ok covers all of them.
-  const res = await fetch(`${base}${messagesPath}`, { method: "POST", headers, body: JSON.stringify(payload) });
+  // The gateway answers 202 Accepted for an enqueued message; the LAN
+  // server 200/201. res.ok covers all of them. A hard timeout so a slow or
+  // stalled relay can't hold the whole login/deletion response hostage —
+  // undici's default is minutes, which the UI reads as "stuck on
+  // Confirming…".
+  const res = await fetch(`${base}${messagesPath}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(10_000),
+  });
 
   if (!res.ok) {
     throw new Error(`SMS gateway rejected the send (${res.status}): ${await res.text()}`);
   }
 
   // The gateway queues the text; the phone's modem sends it a moment later —
-  // the POST only means "accepted". Poll the message a few times so a modem
-  // failure (no signal, dead SIM, no SMS balance) surfaces here instead of
-  // letting the user wait for a code that will never arrive.
+  // the POST only means "accepted". ONE quick check, ~700ms in, catches a
+  // modem failure (no signal, dead SIM — those surface as Failed almost
+  // immediately) without making every send wait for the full delivery lag.
+  // The old 3×700ms loop held responses for seconds whenever the device was
+  // merely asleep; a late failure is visible in the gateway's own log.
   const data = await res.json().catch(() => null);
   const messageId = data?.id ? String(data.id) : null;
   if (messageId) {
-    for (let i = 0; i < 3; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 700));
-      const status = await fetch(`${base}${messagesPath}/${encodeURIComponent(messageId)}`, { headers });
-      if (!status.ok) break;
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const status = await fetch(`${base}${messagesPath}/${encodeURIComponent(messageId)}`, {
+      headers,
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (status.ok) {
       const state = await status.json().catch(() => null);
       if (state?.state === "Failed") {
         throw new Error(
           `The phone failed to send the text: ${state.recipients?.[0]?.error ?? "modem error"}`,
         );
       }
-      // "Sent"/"Delivered" (or anything terminal-but-fine) — done waiting.
-      if (state?.state && state.state !== "Pending" && state.state !== "Processed") break;
     }
   }
 
@@ -140,6 +150,7 @@ const sendViaTwilio = async (to, text) => {
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: params.toString(),
+    signal: AbortSignal.timeout(10_000),
   });
 
   if (!res.ok) {
