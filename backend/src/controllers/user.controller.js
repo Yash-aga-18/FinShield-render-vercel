@@ -9,7 +9,7 @@ import AuditLog from "../models/auditLog.model.js";
 import { logAuditEvent, AUDIT_EVENTS } from "../utils/auditLog.js";
 import { clearAuthCookies } from "../utils/cookies.js";
 import { acquireRedisLock, releaseRedisLock } from "../utils/redisLock.js";
-import { userSessionLockKey, markSessionRevokedInRedis, maskPhoneNumber } from "../utils/security.js";
+import { userSessionLockKey, markSessionRevokedInRedis, maskPhoneNumber, sessionIdleCutoff } from "../utils/security.js";
 import { redisClient } from "../config/redis.js";
 import { numberFromEnv } from "../utils/env.js";
 import { getRiskLevel } from "../utils/risk.js";
@@ -167,7 +167,14 @@ export const getUserActivity = async (req, res, next) => {
     }
 
     const [activeSessions, totalSessions, events] = await Promise.all([
-      Session.countDocuments({ userId: id, revokedAt: null, expiresAt: { $gt: new Date() } }),
+      Session.countDocuments({
+        userId: id,
+        revokedAt: null,
+        expiresAt: { $gt: new Date() },
+        // Same definition of "active" as the user's own sessions page:
+        // an idle-stale session is dead on its next refresh — don't count it.
+        ...(sessionIdleCutoff() ? { lastUsedAt: { $gt: sessionIdleCutoff() } } : {}),
+      }),
       Session.countDocuments({ userId: id }),
       AuditLog.find({ userId: id })
         .select("event severity ipAddress method path createdAt metadata.reason metadata.device metadata.riskLevel")
@@ -1289,7 +1296,10 @@ export const getAllUsers = async (req, res, next) => {
         ...(searchRe ? [{ $match: match }] : []),
         // Per-user stats built from their ACTIVE sessions: how many are
         // alive, and the risk score of the riskiest one — the number the
-        // admin panel's Risk column shows for the account.
+        // admin panel's Risk column shows for the account. "Active" uses
+        // the same definition as the user's own sessions page: not revoked,
+        // not expired, and not idle-stale (an idle session is dead on its
+        // next refresh, so counting it would inflate the number).
         {
           $lookup: {
             from: "sessions",
@@ -1302,6 +1312,9 @@ export const getAllUsers = async (req, res, next) => {
                       { $eq: ["$userId", "$$uid"] },
                       { $eq: ["$revokedAt", null] },
                       { $gt: ["$expiresAt", new Date()] },
+                      ...(sessionIdleCutoff()
+                        ? [{ $gt: ["$lastUsedAt", sessionIdleCutoff()] }]
+                        : []),
                     ],
                   },
                 },

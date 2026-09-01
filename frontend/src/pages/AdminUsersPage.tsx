@@ -16,6 +16,7 @@ import {
   ErrorNote,
   PageTitle,
   Pagination,
+  RefreshButton,
   RiskCell,
   Stamp,
   useToast,
@@ -456,14 +457,13 @@ export default function AdminUsersPage() {
               {total} {total === 1 ? "user" : "users"}
               {search && " matched"}
             </span>
-            <Button
-              variant="outline"
-              className="px-3 py-1.5 text-xs"
-              onClick={() => void load()}
-              disabled={loading}
-            >
-              {loading ? "Refreshing…" : "↻ Refresh"}
-            </Button>
+            <RefreshButton
+              loading={loading}
+              onClick={async () => {
+                await load();
+                showToast("User list refreshed.");
+              }}
+            />
           </span>
         }
       />

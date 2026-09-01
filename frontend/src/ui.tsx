@@ -27,6 +27,39 @@ export function Button({
   return <button className={`${base} ${styles} ${className}`} {...props} />;
 }
 
+/* Refresh control for table toolbars. The ↻ spins while the reload is in
+   flight and nudges around on hover, so the button reads as alive instead
+   of dead — the fetch is often fast enough that a text swap alone is
+   invisible. */
+export function RefreshButton({
+  loading,
+  onClick,
+  label = "Refresh",
+}: {
+  loading: boolean;
+  onClick: () => void;
+  label?: string;
+}) {
+  return (
+    <Button
+      variant="outline"
+      className="group px-3 py-1.5 text-xs"
+      onClick={onClick}
+      disabled={loading}
+    >
+      <span
+        aria-hidden
+        className={`inline-block leading-none transition-transform duration-300 ${
+          loading ? "animate-spin" : "group-hover:rotate-180"
+        }`}
+      >
+        ↻
+      </span>
+      {loading ? "Refreshing…" : label}
+    </Button>
+  );
+}
+
 export function Field({
   label,
   hint,

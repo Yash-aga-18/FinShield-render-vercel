@@ -5,7 +5,7 @@ import {
   type AdminSession,
   type AdminSessionSort,
 } from "../api";
-import { Button, ConfirmDialog, ErrorNote, PageTitle, Pagination, RiskCell, Stamp, useToast } from "../ui";
+import { Button, ConfirmDialog, ErrorNote, PageTitle, Pagination, RefreshButton, RiskCell, Stamp, useToast } from "../ui";
 import { useStepUp } from "../stepUp";
 import { useAuth } from "../auth";
 
@@ -140,14 +140,13 @@ export default function AdminSessionsPage() {
             <span className="tnum">
               {total} {total === 1 ? "session" : "sessions"} across all users
             </span>
-            <Button
-              variant="outline"
-              className="px-3 py-1.5 text-xs"
-              onClick={() => void load()}
-              disabled={loading}
-            >
-              {loading ? "Refreshing…" : "↻ Refresh"}
-            </Button>
+            <RefreshButton
+              loading={loading}
+              onClick={async () => {
+                await load();
+                showToast("Session list refreshed.");
+              }}
+            />
           </span>
         }
       />

@@ -7,7 +7,7 @@ import {
   type SessionHistoryEntry,
   type SessionInfo,
 } from "../api";
-import { Button, ConfirmDialog, ErrorNote, PageTitle, Pagination, Stamp } from "../ui";
+import { Button, ConfirmDialog, ErrorNote, PageTitle, Pagination, RefreshButton, Stamp } from "../ui";
 import { useStepUp } from "../stepUp";
 
 /* Bank-statement style table: dense rows, hairline rules, monospace
@@ -156,14 +156,7 @@ export default function SessionsPage() {
                 ? `${sessions.length} of ${maxSessions} ${maxSessions === 1 ? "device" : "devices"} used`
                 : `${sessions.length} ${sessions.length === 1 ? "session" : "sessions"} active`}
             </span>
-            <Button
-              variant="outline"
-              className="px-3 py-1.5 text-xs"
-              onClick={() => void load()}
-              disabled={loading}
-            >
-              {loading ? "Refreshing…" : "↻ Refresh"}
-            </Button>
+            <RefreshButton loading={loading} onClick={() => void load()} />
           </span>
         }
       />
