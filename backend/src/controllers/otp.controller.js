@@ -32,6 +32,10 @@ const otpFailureResponse = (res, error, extra = {}) => {
       status: 429,
       message: "Too many incorrect attempts. Request a new code.",
     },
+    [OtpError.DELIVERY_FAILED]: {
+      status: 503,
+      message: "We couldn't send the code right now. Please try again shortly.",
+    },
   };
   const entry = map[error] ?? { status: 500, message: "Verification is temporarily unavailable." };
   return res.status(entry.status).json({ success: false, error, message: entry.message, ...extra });

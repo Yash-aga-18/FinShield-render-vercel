@@ -59,6 +59,7 @@ export const OtpError = Object.freeze({
   INVALID: "INVALID",
   EXPIRED: "EXPIRED",
   LOCKED: "LOCKED",
+  DELIVERY_FAILED: "DELIVERY_FAILED",
 });
 
 /* ============================================================
@@ -115,14 +116,30 @@ export async function issueOtp({ user, purpose, req, actionLabel = "", channel =
   // address that is not the account email yet (verifying a NEW email before
   // making it the account email).
   let delivery;
-  if (channel === "sms") {
-    const target = phone || user.phoneNumber;
-    if (!target) {
-      return { error: "SMS_TARGET_MISSING" };
+  try {
+    if (channel === "sms") {
+      const target = phone || user.phoneNumber;
+      if (!target) {
+        return { error: "SMS_TARGET_MISSING" };
+      }
+      delivery = await sendSmsOtp(target, code, purpose, actionLabel, OTP_EXPIRY_MINUTES);
+    } else {
+      delivery = await sendOtpEmail(email || user.email, code, purpose, actionLabel, OTP_EXPIRY_MINUTES);
     }
-    delivery = await sendSmsOtp(target, code, purpose, actionLabel, OTP_EXPIRY_MINUTES);
-  } else {
-    delivery = await sendOtpEmail(email || user.email, code, purpose, actionLabel, OTP_EXPIRY_MINUTES);
+  } catch (error) {
+    // Provider outage (gateway unreachable, mailer rejection, …). The code
+    // and its resend cooldown were stored BEFORE delivery — roll both back
+    // so the caller can retry immediately instead of waiting out a cooldown
+    // for a code that never arrived. Controllers map this to a clean 503
+    // ("delivery temporarily unavailable"), not a raw 500.
+    if (redisClient?.isOpen) {
+      await redisClient.del(
+        otpKey(user._id.toString(), purpose),
+        cooldownKey(user._id.toString(), purpose),
+      );
+    }
+    console.error(`[otp] ${channel} delivery failed (${purpose}): ${error.message}`);
+    return { error: OtpError.DELIVERY_FAILED };
   }
 
   logAuditEvent({
