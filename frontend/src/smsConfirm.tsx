@@ -54,7 +54,12 @@ export function SmsConfirmDialog({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [resendBusy, setResendBusy] = useState(false);
+  const [expiresInSeconds, setExpiresInSeconds] = useState(initial.expiresInSeconds ?? 600);
   const countdown = useCountdown(initial.resendCooldownSeconds ?? 45);
+
+  // The code's lifetime, rounded up to whole minutes — the same closing
+  // sentence every other OTP dialog uses ("It expires in 10 minutes.").
+  const expiresMinutes = Math.max(1, Math.ceil(expiresInSeconds / 60));
 
   // The initial text already went out (this dialog opens on its response),
   // so a resend is the only thing that re-issues a code.
@@ -67,6 +72,7 @@ export function SmsConfirmDialog({
       countdown.start(res.resendCooldownSeconds ?? 45);
       setDevCode(res.devCode ?? null);
       setWarning(res.deliveryWarning ?? null);
+      setExpiresInSeconds(res.expiresInSeconds ?? expiresInSeconds);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't resend the code");
     } finally {
@@ -108,7 +114,10 @@ export function SmsConfirmDialog({
           }}
           className="space-y-4"
         >
-          <p className="text-sm leading-relaxed text-ink-soft">{body(maskedPhone)}</p>
+          <p className="text-sm leading-relaxed text-ink-soft">
+            {body(maskedPhone)} It expires in {expiresMinutes} minute
+            {expiresMinutes === 1 ? "" : "s"}.
+          </p>
           <div className="space-y-1.5">
             <label className="block text-sm font-medium text-ink">Texted code</label>
             <OtpInput
