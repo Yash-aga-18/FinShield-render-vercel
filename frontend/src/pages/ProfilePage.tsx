@@ -504,7 +504,7 @@ export default function ProfilePage() {
         <PhoneChangeDialog
           otpLength={rules.otpLength}
           hasPhone={Boolean(user?.phoneNumber)}
-          currentPhone={user?.phoneNumber}
+          currentPhone={user?.phoneNumber ?? undefined}
           email={user?.email}
           runStepUp={stepUp.run}
           onClose={() => setPhoneDialogOpen(false)}
