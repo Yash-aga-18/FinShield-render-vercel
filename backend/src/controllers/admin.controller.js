@@ -9,7 +9,8 @@ import { acquireRedisLock, releaseRedisLock } from "../utils/redisLock.js";
 import { userSessionLockKey, toDisplayId, markSessionRevokedInRedis, sessionIdleCutoff, maskPhoneNumber } from "../utils/security.js";
 import { sendAdminActionEmail } from "../utils/mailer.js";
 import { numberFromEnv } from "../utils/env.js";
-import { issueOtp, verifyOtp, OtpError } from "../utils/otp.js";
+import { issueOtp, verifyOtp, hasPendingOtp, OtpError } from "../utils/otp.js";
+import { assessDeletionRisk } from "../utils/deletionRisk.js";
 
 /* Email confirmation to the acting admin after a destructive action.
    Fire-and-forget: a mail provider outage must never fail the action,
@@ -435,16 +436,46 @@ export const adminDeleteUser = async (req, res, next) => {
       });
     }
 
-    // Destroying someone's account is the strongest action in the panel, so
-    // an admin with a verified phone confirms on BOTH channels, sequential:
-    // the emailed step-up code (route middleware above), then a texted code
-    // to the ADMIN's own phone — the phone is the last word before the
-    // record goes away. Step 1 (no smsCode) texts and returns; step 2 (with
-    // smsCode) verifies and deletes.
-    const admin = await User.findById(adminId).select("phoneNumber phoneVerified");
-    const smsDue = Boolean(admin?.phoneNumber && admin?.phoneVerified);
+    // Destroying someone's account is the strongest action in the panel —
+    // and how much proof it takes is now RISK-ADAPTIVE, judged from both
+    // sides of the action. The emailed step-up code (route middleware above)
+    // is always owed; the texted second channel is owed only when the
+    // combined risk of the admin's CURRENT session and the target's own
+    // risk reaches the MEDIUM band. A quiet admin deleting a quiet account
+    // stops at the emailed code; anything elevated and the ADMIN's phone
+    // becomes the last word before the record goes away.
+    const [admin, adminSession, targetSessions, target] = await Promise.all([
+      User.findById(adminId).select("phoneNumber phoneVerified riskScore"),
+      Session.findOne({ sessionId: req.user.sessionId, revokedAt: null })
+        .select("riskScore")
+        .lean(),
+      Session.find({ userId: targetUserId, revokedAt: null, expiresAt: { $gt: new Date() } })
+        .select("riskScore")
+        .lean(),
+      User.findById(targetUserId).select("riskScore"),
+    ]);
 
-    if (smsDue) {
+    const deletion = assessDeletionRisk({
+      adminSessionRisk: adminSession?.riskScore ?? admin?.riskScore ?? 0,
+      targetRisk: Math.max(
+        target?.riskScore ?? 0,
+        ...targetSessions.map((s) => s.riskScore ?? 0),
+      ),
+    });
+
+    // A smsCode is in play → this is step 2 of a two-channel challenge.
+    // The OUTSTANDING record decides first (a verdict that shifted between
+    // the two calls — a target session revoked, a score re-scored — must
+    // not strand or silently waive a code that was already texted), and a
+    // missing record does NOT waive the text when the CURRENT verdict still
+    // demands it: a stale or fabricated smsCode must fail verification, not
+    // route around the challenge. Step 1 (no smsCode) is judged purely by
+    // the current verdict, and only for an admin whose phone can receive it.
+    const phoneCapable = Boolean(admin?.phoneNumber && admin?.phoneVerified);
+    const smsOwed =
+      (await hasPendingOtp(adminId, "delete_sms")) || (phoneCapable && deletion.smsRequired);
+
+    if (smsOwed) {
       const { smsCode } = req.body ?? {};
 
       if (!smsCode) {
@@ -468,6 +499,8 @@ export const adminDeleteUser = async (req, res, next) => {
           requireOtp: true,
           message: `We texted a code to ${maskPhoneNumber(admin.phoneNumber)}. Enter it to finish deleting this user.`,
           maskedPhone: maskPhoneNumber(admin.phoneNumber),
+          // Why the extra step is owed — same numbers the audit trail keeps.
+          deletionRisk: { score: deletion.score, level: deletion.level },
           expiresInSeconds: otp.expiresInSeconds,
           resendCooldownSeconds: otp.resendCooldownSeconds,
           ...(otp.deliveryWarning ? { deliveryWarning: otp.deliveryWarning } : {}),
@@ -542,7 +575,7 @@ export const adminDeleteUser = async (req, res, next) => {
         event: AUDIT_EVENTS.USER_DELETED,
         userId: targetUserId,
         req,
-        metadata: { reason: "admin_action", adminId },
+        metadata: { reason: `admin_action — ${deletion.basis}`, adminId },
       });
 
       notifyAdminAsync(adminId, {

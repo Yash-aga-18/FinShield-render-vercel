@@ -28,6 +28,11 @@ export const RISK_LEVEL = Object.freeze({
   CRITICAL: "CRITICAL",
 });
 
+/* The band thresholds, read-only — other modules key their own policy to
+   the same numbers the login risk engine uses (e.g. the deletion second
+   channel defaults its trigger to the MEDIUM band). */
+export const RISK_THRESHOLDS = Object.freeze({ ...THRESHOLDS });
+
 export const RISK_ACTION = Object.freeze({
   ALLOW: "ALLOW",
   ALLOW_AND_AUDIT: "ALLOW_AND_AUDIT",

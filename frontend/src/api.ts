@@ -374,13 +374,17 @@ export async function updateProfile(payload: { name?: string; email?: string }) 
 }
 
 /** The two-channel challenge half of a deletion response: when an account
-    (or the acting admin) has a verified phone, step 1 texts a code and
-    returns this instead of deleting. */
+    (or the acting admin) has a verified phone AND the combined deletion
+    risk of the acting admin's session and the target clears the MEDIUM
+    band, step 1 texts a code and returns this instead of deleting. */
 export interface DeletionSmsChallenge {
   success: boolean;
   requireOtp?: boolean;
   message: string;
   maskedPhone?: string;
+  /** Why the texted step is owed — the combined risk verdict (admin's
+      current session + the target's own risk). Informational. */
+  deletionRisk?: { score: number; level: string };
   expiresInSeconds?: number;
   resendCooldownSeconds?: number;
   devCode?: string;
