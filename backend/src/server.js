@@ -79,6 +79,22 @@ app.get("/health", (req, res) => {
   });
 });
 
+// TEMPORARY diagnostic for the TRUST_PROXY / X-Forwarded-For investigation:
+// shows exactly what Express resolves as the client IP and the proxy headers
+// it saw, so we can pick the right hop count for the Vercel→Render chain.
+// Remove once the session IP displays correctly.
+app.get("/api/diag/ip", (req, res) => {
+  res.status(200).json({
+    ip: req.ip,
+    ips: req.ips,
+    socket: req.socket?.remoteAddress ?? null,
+    xff: req.headers["x-forwarded-for"] ?? null,
+    realIp: req.headers["x-real-ip"] ?? null,
+    vercelXff: req.headers["x-vercel-forwarded-for"] ?? null,
+    trustProxySetting: app.get("trust proxy") ?? false,
+  });
+});
+
 app.use("/api/auth", authRouter);
 app.use("/api/users", userRouter);
 app.use("/api/sessions", sessionRouter);
