@@ -24,35 +24,6 @@ export const toDisplayId = (sessionId) =>
   createHmac("sha256", displayIdKey()).update(String(sessionId)).digest("hex");
 
 /**
- * Masks an IP address for API responses: keeps network-level context
- * (IPv4 /24, IPv6 /64 prefix) while hiding the exact client address.
- */
-export const maskIpAddress = (ipAddress) => {
-  if (typeof ipAddress !== "string" || ipAddress.length === 0) {
-    return null;
-  }
-
-  // Outside production (local dev / tests) every request arrives from
-  // 127.0.0.1, which masks to a useless "127.0.0.x". Show the real address.
-  if (process.env.NODE_ENV !== "production") {
-    return ipAddress;
-  }
-
-  // IPv4: keep first three octets, mask the last (192.0.2.10 -> 192.0.2.x)
-  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(ipAddress)) {
-    return `${ipAddress.split(".").slice(0, 3).join(".")}.x`;
-  }
-
-  // IPv6: keep first two groups, mask the rest
-  if (ipAddress.includes(":")) {
-    const groups = ipAddress.split(":").filter(Boolean);
-    return groups.length >= 2 ? `${groups.slice(0, 2).join(":")}::x` : "x::x";
-  }
-
-  return "hidden";
-};
-
-/**
  * Masks a phone number for display: everything except the last 4 digits
  * becomes bullets (a leading "+" is kept), e.g. +15550001111 -> +•••••••1111.
  * Unlike IP masking this runs in EVERY environment — a phone number is PII

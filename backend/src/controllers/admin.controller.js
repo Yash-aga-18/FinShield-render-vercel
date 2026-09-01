@@ -6,7 +6,7 @@ import Session from "../models/session.model.js";
 import User from "../models/user.model.js";
 import { logAuditEvent, flushAuditLogs, verifyAuditChain, AUDIT_EVENTS } from "../utils/auditLog.js";
 import { acquireRedisLock, releaseRedisLock } from "../utils/redisLock.js";
-import { userSessionLockKey, toDisplayId, maskIpAddress, markSessionRevokedInRedis, sessionIdleCutoff } from "../utils/security.js";
+import { userSessionLockKey, toDisplayId, markSessionRevokedInRedis, sessionIdleCutoff } from "../utils/security.js";
 import { sendAdminActionEmail } from "../utils/mailer.js";
 import { numberFromEnv } from "../utils/env.js";
 
@@ -84,7 +84,7 @@ export const getAllActiveSessions = async (req, res, next) => {
       userName: userById.get(String(session.userId))?.name ?? "Unknown",
       userEmail: userById.get(String(session.userId))?.email ?? "unknown",
       device: session.device,
-      ipAddress: maskIpAddress(session.ipAddress),
+      ipAddress: session.ipAddress,
       createdAt: session.createdAt,
       lastUsedAt: session.lastUsedAt,
       expiresAt: session.expiresAt,

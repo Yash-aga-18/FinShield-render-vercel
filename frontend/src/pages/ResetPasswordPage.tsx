@@ -2,12 +2,14 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { getInputRules, resetPassword } from "../api";
 import { Button, ErrorNote, PasswordField } from "../ui";
-import { OtpStep } from "../otp";
+import { OtpInput, OtpStep, ResendButton, useCountdown } from "../otp";
 import { Brand } from "./LoginPage";
 
 /* Two-step recovery: choose the new password (link is validated, code is
    emailed), then confirm the emailed code — only then does the password
-   actually change. */
+   actually change. Accounts with a verified phone are two-channel: a code is
+   emailed AND texted, and both must be entered (a stolen mailbox alone must
+   not be enough to take over an account). */
 
 export default function ResetPasswordPage() {
   const [params] = useSearchParams();
@@ -43,6 +45,12 @@ export default function ResetPasswordPage() {
   // Dev-only console-mail code / provider-rejection warning.
   const [devCode, setDevCode] = useState<string | null>(null);
   const [deliveryWarning, setDeliveryWarning] = useState<string | null>(null);
+  // Two-channel reset: the account has a verified phone, so a second code is
+  // texted and both must be entered.
+  const [smsRequired, setSmsRequired] = useState(false);
+  const [smsPhone, setSmsPhone] = useState<string | null>(null);
+  const [smsCode, setSmsCode] = useState("");
+  const [smsDevCode, setSmsDevCode] = useState<string | null>(null);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -61,7 +69,8 @@ export default function ResetPasswordPage() {
     }
     setBusy(true);
     try {
-      // Step 1: the backend emails a confirmation code before changing anything.
+      // Step 1: the backend emails a confirmation code before changing
+      // anything (and texts one too when a verified phone is linked).
       const res = await resetPassword(token, newPassword);
       if (res.requireOtp) {
         setAwaitOtp(true);
@@ -69,6 +78,10 @@ export default function ResetPasswordPage() {
         setCode("");
         setDevCode(res.devCode ?? null);
         setDeliveryWarning(res.deliveryWarning ?? null);
+        setSmsRequired(Boolean(res.smsRequired));
+        setSmsPhone(res.smsPhone ?? null);
+        setSmsCode("");
+        setSmsDevCode(res.smsDevCode ?? null);
       } else {
         setDone(true);
         setTimeout(() => navigate("/login", { replace: true }), 2500);
@@ -85,8 +98,8 @@ export default function ResetPasswordPage() {
     setOtpError("");
     setBusy(true);
     try {
-      // Step 2: the code confirms the change; this call mutates the password.
-      await resetPassword(token, newPassword, code);
+      // Step 2: the codes confirm the change; this call mutates the password.
+      await resetPassword(token, newPassword, code, smsRequired ? smsCode : undefined);
       setDone(true);
       setTimeout(() => navigate("/login", { replace: true }), 2500);
     } catch (err) {
@@ -100,11 +113,12 @@ export default function ResetPasswordPage() {
     setOtpError("");
     setResendBusy(true);
     try {
-      // Re-running step 1 re-issues the code (subject to the cooldown).
+      // Re-running step 1 re-issues both codes (subject to the cooldown).
       const res = await resetPassword(token, newPassword);
       setCooldown(res.resendCooldownSeconds ?? 45);
       setDevCode(res.devCode ?? null);
       setDeliveryWarning(res.deliveryWarning ?? null);
+      setSmsDevCode(res.smsDevCode ?? null);
     } catch (err) {
       setOtpError(err instanceof Error ? err.message : "Couldn't resend the code");
     } finally {
@@ -145,32 +159,59 @@ export default function ResetPasswordPage() {
             </p>
           </div>
         ) : awaitOtp ? (
-          <>
-            <p className="mb-1 text-xs font-semibold tracking-[0.14em] text-accent uppercase">
-              Final check
-            </p>
-            <h2 className="font-display mb-6 text-2xl font-medium text-ink">Confirm the change</h2>
-            <OtpStep
-              email="your email"
-              error={otpError}
-              busy={busy}
-              code={code}
-              onCodeChange={setCode}
-              onSubmit={onVerifyOtp}
-              onResend={onResendOtp}
-              resendBusy={resendBusy}
-              cooldownSeconds={cooldown}
-              deliveryWarning={deliveryWarning}
-              devCode={devCode}
-              length={pwRules.otpLength}
-            />
-          </>
+          smsRequired ? (
+            <>
+              <p className="mb-1 text-xs font-semibold tracking-[0.14em] text-accent uppercase">
+                Final check
+              </p>
+              <h2 className="font-display mb-6 text-2xl font-medium text-ink">Confirm the change</h2>
+              <TwoCodeStep
+                error={otpError}
+                busy={busy}
+                code={code}
+                onCodeChange={setCode}
+                smsCode={smsCode}
+                onSmsCodeChange={setSmsCode}
+                smsPhone={smsPhone}
+                onSubmit={onVerifyOtp}
+                onResend={onResendOtp}
+                resendBusy={resendBusy}
+                cooldownSeconds={cooldown}
+                deliveryWarning={deliveryWarning}
+                devCode={devCode}
+                smsDevCode={smsDevCode}
+                length={pwRules.otpLength}
+              />
+            </>
+          ) : (
+            <>
+              <p className="mb-1 text-xs font-semibold tracking-[0.14em] text-accent uppercase">
+                Final check
+              </p>
+              <h2 className="font-display mb-6 text-2xl font-medium text-ink">Confirm the change</h2>
+              <OtpStep
+                email="your email"
+                error={otpError}
+                busy={busy}
+                code={code}
+                onCodeChange={setCode}
+                onSubmit={onVerifyOtp}
+                onResend={onResendOtp}
+                resendBusy={resendBusy}
+                cooldownSeconds={cooldown}
+                deliveryWarning={deliveryWarning}
+                devCode={devCode}
+                length={pwRules.otpLength}
+              />
+            </>
+          )
         ) : (
           <>
             <p className="mb-6 text-sm leading-relaxed text-ink-soft">
               Setting a new password signs you out everywhere for your security. After you choose
-              the new password we&rsquo;ll email you a confirmation code — the password only changes
-              once you enter it.
+              the new password we&rsquo;ll email you a confirmation code — and text one to your
+              phone as well, if a number is linked to your account. The password only changes once
+              you enter them.
             </p>
             <form onSubmit={onSubmit} className="space-y-4">
               <PasswordField
@@ -201,5 +242,95 @@ export default function ResetPasswordPage() {
         )}
       </div>
     </main>
+  );
+}
+
+/* Two-channel confirmation: one code arrived by email, one by text — both
+   are required before anything changes. Mirrors OtpStep's layout so the
+   experience feels like the same screen with a second field. */
+function TwoCodeStep({
+  error,
+  busy,
+  code,
+  onCodeChange,
+  smsCode,
+  onSmsCodeChange,
+  smsPhone,
+  onSubmit,
+  onResend,
+  resendBusy,
+  cooldownSeconds,
+  deliveryWarning,
+  devCode,
+  smsDevCode,
+  length = 6,
+}: {
+  error: string;
+  busy: boolean;
+  code: string;
+  onCodeChange: (code: string) => void;
+  smsCode: string;
+  onSmsCodeChange: (code: string) => void;
+  smsPhone: string | null;
+  onSubmit: () => void;
+  onResend: () => void;
+  resendBusy: boolean;
+  cooldownSeconds: number;
+  deliveryWarning?: string | null;
+  devCode?: string | null;
+  smsDevCode?: string | null;
+  length?: number;
+}) {
+  const countdown = useCountdown(cooldownSeconds);
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-4">
+      <p className="text-sm leading-relaxed text-ink-soft">
+        We emailed a {length}-digit code to your email and texted another to{" "}
+        <strong className="text-ink">{smsPhone ?? "your phone"}</strong>. Both are required — they
+        expire in 10 minutes.
+      </p>
+      <div>
+        <p className="mb-2 text-xs font-semibold tracking-[0.14em] text-ink-faint uppercase">
+          Emailed code
+        </p>
+        <OtpInput value={code} onChange={onCodeChange} disabled={busy} onEnter={onSubmit} length={length} />
+      </div>
+      <div>
+        <p className="mb-2 text-xs font-semibold tracking-[0.14em] text-ink-faint uppercase">
+          Texted code
+        </p>
+        <OtpInput value={smsCode} onChange={onSmsCodeChange} disabled={busy} onEnter={onSubmit} length={length} />
+      </div>
+      {deliveryWarning && (
+        <p className="rounded-xs border border-red-stamp/40 bg-red-soft px-3 py-2 text-sm text-red-stamp">
+          The email could not be sent — the provider rejected the request. The code is from the
+          server console only. Details: {deliveryWarning}
+        </p>
+      )}
+      {devCode && (
+        <p className="rounded-xs border border-amber-stamp/40 bg-amber-stamp/10 px-3 py-2 text-xs text-amber-stamp">
+          Dev mode (console mail delivery): your emailed code is{" "}
+          <span className="font-mono font-semibold">{devCode}</span>
+        </p>
+      )}
+      {smsDevCode && (
+        <p className="rounded-xs border border-amber-stamp/40 bg-amber-stamp/10 px-3 py-2 text-xs text-amber-stamp">
+          Dev mode (console SMS delivery): your texted code is{" "}
+          <span className="font-mono font-semibold">{smsDevCode}</span>
+        </p>
+      )}
+      <ErrorNote>{error}</ErrorNote>
+      <Button
+        type="submit"
+        disabled={busy || code.length !== length || smsCode.length !== length}
+        className="w-full"
+      >
+        {busy ? "Verifying…" : "Verify"}
+      </Button>
+      <div className="text-center">
+        <ResendButton countdown={countdown} onResend={onResend} busy={resendBusy} />
+      </div>
+    </form>
   );
 }

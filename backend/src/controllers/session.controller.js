@@ -5,7 +5,7 @@ import { redisClient } from "../config/redis.js";
 import { logAuditEvent, AUDIT_EVENTS } from "../utils/auditLog.js";
 import { clearAuthCookies } from "../utils/cookies.js";
 import { acquireRedisLock, releaseRedisLock } from "../utils/redisLock.js";
-import { userSessionLockKey, toDisplayId, maskIpAddress, markSessionRevokedInRedis, sessionIdleCutoff } from "../utils/security.js";
+import { userSessionLockKey, toDisplayId, markSessionRevokedInRedis, sessionIdleCutoff } from "../utils/security.js";
 import { numberFromEnv } from "../utils/env.js";
 
 /* ============================================================
@@ -30,7 +30,7 @@ export const getActiveSessions = async (req, res, next) => {
     const formattedSessions = sessions.map((session) => ({
       id: toDisplayId(session.sessionId),
       device: session.device,
-      ipAddress: maskIpAddress(session.ipAddress),
+      ipAddress: session.ipAddress,
       createdAt: session.createdAt,
       lastUsedAt: session.lastUsedAt,
       expiresAt: session.expiresAt,
@@ -85,7 +85,7 @@ export const getSessionHistory = async (req, res, next) => {
     const history = ended.map((session) => ({
       id: toDisplayId(session.sessionId),
       device: session.device,
-      ipAddress: maskIpAddress(session.ipAddress),
+      ipAddress: session.ipAddress,
       createdAt: session.createdAt,
       lastUsedAt: session.lastUsedAt,
       endedAt: session.revokedAt || session.expiresAt,

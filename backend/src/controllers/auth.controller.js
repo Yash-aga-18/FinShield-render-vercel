@@ -14,14 +14,14 @@ import { setAuthCookies, clearAuthCookies, getBaseCookieOptions, getCookieNames 
 import { logAuditEvent, AUDIT_EVENTS } from "../utils/auditLog.js";
 import { getDeviceLabel } from "../utils/device.js";
 import { getClientIp } from "../utils/ip.js";
-import { hashToken, detectLoginAnomalies, userSessionLockKey, sessionRefreshLockKey, redisSessionKey, toDisplayId, maskIpAddress, maskPhoneNumber, markSessionRevokedInRedis, sessionIdleCutoff } from "../utils/security.js";
+import { hashToken, detectLoginAnomalies, userSessionLockKey, sessionRefreshLockKey, redisSessionKey, toDisplayId, maskPhoneNumber, markSessionRevokedInRedis, sessionIdleCutoff } from "../utils/security.js";
 import { calculateRisk, RISK_ACTION } from "../utils/risk.js";
 import { acquireRedisLock, releaseRedisLock } from "../utils/redisLock.js";
 
 import { getFailedLoginAttempts, recordFailedLogin, clearLoginAttempts, getAccountMaxFailures } from "../middleware/rateLimiter.middleware.js";
 import { redisClient } from "../config/redis.js";
 import { buildResetUrl, sendPasswordResetEmail, shouldExposeResetLink, sendSigninDetectedEmail } from "../utils/mailer.js";
-import { issueOtp, verifyOtp, verifyTrustedDeviceToken, trustedDeviceCookieName } from "../utils/otp.js";
+import { issueOtp, verifyOtp, verifyTrustedDeviceToken, trustedDeviceCookieName, OtpError } from "../utils/otp.js";
 import { RISK_LEVEL } from "../utils/risk.js";
 import { durationFromEnv, numberFromEnv } from "../utils/env.js";
 import { NAME_MIN_LENGTH, NAME_MAX_LENGTH } from "../utils/namePolicy.js";
@@ -1249,39 +1249,101 @@ export const resetPassword = async (req, res) => {
           ...(otp.retryAfterSeconds ? { retryAfterSeconds: otp.retryAfterSeconds } : {}),
         });
       }
+
+      // A verified phone makes the reset two-channel: the emailed code AND a
+      // texted code must both be presented. A stolen mailbox alone (the classic
+      // reset-link takeover) can no longer change the password — the attacker
+      // would also need the SIM in the user's pocket. Accounts without a
+      // verified phone stay email-only.
+      const smsRequired = Boolean(user.phoneNumber && user.phoneVerified);
+      let smsOtp = null;
+      if (smsRequired) {
+        smsOtp = await issueOtp({ user, purpose: "password_reset_sms", req, channel: "sms" });
+        // COOLDOWN means a texted code from a previous attempt is still live —
+        // fine, the user can use that one. Anything else is a delivery outage.
+        if (smsOtp.error && smsOtp.error !== OtpError.COOLDOWN) {
+          return res.status(503).json({
+            success: false,
+            error: smsOtp.error,
+            message: "We couldn't text your confirmation code. Try again shortly.",
+          });
+        }
+      }
+
       return res.status(200).json({
         success: true,
         requireOtp: true,
-        message: "Almost there — enter the confirmation code we emailed you to finish the reset.",
+        ...(smsRequired
+          ? {
+              smsRequired: true,
+              smsPhone: maskPhoneNumber(user.phoneNumber),
+              message: `Almost there — enter the code we emailed you and the code we texted to ${maskPhoneNumber(user.phoneNumber)} to finish the reset.`,
+            }
+          : {
+              message: "Almost there — enter the confirmation code we emailed you to finish the reset.",
+            }),
         expiresInSeconds: otp.expiresInSeconds,
         resendCooldownSeconds: otp.resendCooldownSeconds,
         // Console-mail code / provider-rejection warning (dev-only code echo).
         ...(otp.deliveryWarning ? { deliveryWarning: otp.deliveryWarning } : {}),
         ...(otp.devCode ? { devCode: otp.devCode } : {}),
+        ...(smsOtp?.devCode ? { smsDevCode: smsOtp.devCode } : {}),
       });
     }
 
-    // Step 2: OTP must pass before the password changes.
-    const otpResult = await verifyOtp({ user, purpose: "password_reset", code });
-    if (!otpResult.valid) {
+    // Step 2: every required code must pass before the password changes.
+    // A verified phone makes the reset two-channel: the emailed code AND a
+    // texted code — the emailed one alone must never complete a reset (a
+    // stolen mailbox is the classic reset-link takeover). Codes are single-
+    // use, so each is PEEKED first and only consumed once both matched: a
+    // typo in one field must not burn the code from the other.
+    const smsRequired = Boolean(user.phoneNumber && user.phoneVerified);
+    const { smsCode } = req.body;
+
+    if (smsRequired && !smsCode) {
+      return res.status(400).json({
+        success: false,
+        error: "SMS_CODE_REQUIRED",
+        message: `Enter the code we texted to ${maskPhoneNumber(user.phoneNumber)} as well — both codes are required.`,
+      });
+    }
+
+    const emailPeek = await verifyOtp({ user, purpose: "password_reset", code, consume: false });
+    const smsPeek = smsRequired
+      ? await verifyOtp({ user, purpose: "password_reset_sms", code: smsCode, consume: false })
+      : { valid: true };
+
+    if (!emailPeek.valid || !smsPeek.valid) {
+      // Re-verify the failing channel for real — the peek deliberately
+      // doesn't count the wrong attempt; this call is what burns it.
+      const failing = !emailPeek.valid
+        ? { purpose: "password_reset", code, texted: false }
+        : { purpose: "password_reset_sms", code: smsCode, texted: true };
+      const result = await verifyOtp({ user, purpose: failing.purpose, code: failing.code });
       logAuditEvent({
         event: AUDIT_EVENTS.OTP_FAILED,
         userId: user._id,
         req,
-        metadata: { purpose: "password_reset", reason: otpResult.error },
+        metadata: { purpose: failing.purpose, reason: result.error },
       });
       const statusByError = { INVALID: 401, EXPIRED: 400, LOCKED: 429 };
-      return res.status(statusByError[otpResult.error] || 400).json({
+      return res.status(statusByError[result.error] || 400).json({
         success: false,
-        error: otpResult.error,
+        error: result.error,
         message:
-          otpResult.error === "INVALID"
-            ? "That code is incorrect."
-            : otpResult.error === "LOCKED"
+          result.error === "INVALID"
+            ? `That ${failing.texted ? "texted " : ""}code is incorrect.`
+            : result.error === "LOCKED"
               ? "Too many incorrect attempts. Request a new code."
-              : "That code has expired. Request a new one.",
-        ...(otpResult.attemptsLeft !== undefined ? { attemptsLeft: otpResult.attemptsLeft } : {}),
+              : `That ${failing.texted ? "texted " : ""}code has expired. Request a new one.`,
+        ...(result.attemptsLeft !== undefined ? { attemptsLeft: result.attemptsLeft } : {}),
       });
+    }
+
+    // Both matched — now consume them (strictly one use).
+    await verifyOtp({ user, purpose: "password_reset", code });
+    if (smsRequired) {
+      await verifyOtp({ user, purpose: "password_reset_sms", code: smsCode });
     }
 
     const lockKey = userSessionLockKey(user._id.toString());

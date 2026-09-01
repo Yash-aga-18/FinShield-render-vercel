@@ -455,17 +455,25 @@ export function forgotPassword(email: string) {
 }
 
 // Step 1 (no code): backend validates the link + password and emails an OTP;
-// the response carries requireOtp. Step 2 (with code): the password changes.
-export function resetPassword(token: string, newPassword: string, code?: string) {
+// the response carries requireOtp (plus smsRequired when a verified phone
+// makes the reset two-channel). Step 2 (with code): the password changes —
+// smsCode alongside the emailed code when the account has a verified phone.
+export function resetPassword(token: string, newPassword: string, code?: string, smsCode?: string) {
   return api<{
     success: boolean;
     message: string;
     requireOtp?: boolean;
+    smsRequired?: boolean;
+    smsPhone?: string;
     expiresInSeconds?: number;
     resendCooldownSeconds?: number;
+    smsDevCode?: string;
   } & OtpDeliveryInfo>("/api/auth/reset-password", {
     method: "POST",
-    body: code ? { token, newPassword, code } : { token, newPassword },
+    body:
+      code !== undefined || smsCode !== undefined
+        ? { token, newPassword, ...(code !== undefined && { code }), ...(smsCode !== undefined && { smsCode }) }
+        : { token, newPassword },
   });
 }
 
