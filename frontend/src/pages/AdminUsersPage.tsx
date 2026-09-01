@@ -73,8 +73,9 @@ const eventLabel = (event: string): string =>
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ");
 
-/* Side drawer with one user's basic activity log: when the account was
-   created, when they last signed in, and their recent audit events. */
+/* Side drawer with one user's details: contact info, verification state,
+   session counts, and their recent audit events. Opened by clicking the
+   user's name (or "Logs") in the table. */
 function ActivityDrawer({
   user,
   refreshKey,
@@ -127,7 +128,7 @@ function ActivityDrawer({
         <div className="mb-4 flex items-start justify-between">
           <div>
             <p className="text-xs font-semibold tracking-[0.08em] text-ink-faint uppercase">
-              User activity
+              User details
             </p>
             <h2 className="font-display mt-1 text-xl font-medium text-ink">{user.name}</h2>
             <p className="text-sm text-ink-soft">{user.email}</p>
@@ -148,6 +149,41 @@ function ActivityDrawer({
         ) : (
           <>
             <div className="mb-6 grid grid-cols-2 gap-3">
+              <div className="rounded-sm border border-rule p-3">
+                <p className="text-xs text-ink-faint uppercase">Phone number</p>
+                <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-ink">
+                  {activity.user.phoneNumber ?? (
+                    <span className="text-ink-faint">Not added</span>
+                  )}
+                  {activity.user.phoneNumber && (
+                    <Stamp tone={activity.user.phoneVerified ? "good" : "warn"}>
+                      {activity.user.phoneVerified ? "Verified" : "Unverified"}
+                    </Stamp>
+                  )}
+                </p>
+              </div>
+              <div className="rounded-sm border border-rule p-3">
+                <p className="text-xs text-ink-faint uppercase">Sign-in method</p>
+                <p className="mt-1 text-sm text-ink">
+                  {activity.user.hasGoogle ? "Google account" : "Email & password"}
+                </p>
+              </div>
+              <div className="rounded-sm border border-rule p-3">
+                <p className="text-xs text-ink-faint uppercase">Email</p>
+                <p className="mt-1 text-sm">
+                  <Stamp tone={activity.user.isVerified ? "good" : "warn"}>
+                    {activity.user.isVerified ? "Verified" : "Not verified"}
+                  </Stamp>
+                </p>
+              </div>
+              <div className="rounded-sm border border-rule p-3">
+                <p className="text-xs text-ink-faint uppercase">Role</p>
+                <p className="mt-1 text-sm text-ink">
+                  <Stamp tone={activity.user.role === "admin" ? "warn" : "neutral"}>
+                    {activity.user.role}
+                  </Stamp>
+                </p>
+              </div>
               <div className="rounded-sm border border-rule p-3">
                 <p className="text-xs text-ink-faint uppercase">Account created</p>
                 <p className="mt-1 text-sm text-ink">{formatDateTime(activity.user.createdAt)}</p>

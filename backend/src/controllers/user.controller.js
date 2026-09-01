@@ -137,10 +137,10 @@ export const getUserById = async (req, res, next) => {
 };
 
 /**
- * GET /api/users/:id/activity — Admin: basic activity log for one user.
- * Returns the account summary (registered, last login, session counts)
- * plus their N most recent audit events. Read-only, no PII beyond what
- * the admin can already see on the users list.
+ * GET /api/users/:id/activity — Admin: account details + activity log.
+ * Returns the account summary (registered, last login, session counts,
+ * masked phone, sign-in method) plus their N most recent audit events.
+ * Read-only; the phone number stays masked like every other PII surface.
  */
 export const getUserActivity = async (req, res, next) => {
   try {
@@ -158,7 +158,7 @@ export const getUserActivity = async (req, res, next) => {
     );
 
     const user = await User.findById(id)
-      .select("name email role isVerified createdAt lastLoginAt")
+      .select("name email role isVerified createdAt lastLoginAt phoneNumber phoneVerified googleId")
       .lean();
 
     if (!user) {
@@ -185,6 +185,11 @@ export const getUserActivity = async (req, res, next) => {
         isVerified: user.isVerified,
         createdAt: user.createdAt,
         lastLoginAt: user.lastLoginAt,
+        // Masked even for admins — same PII treatment as the profile
+        // endpoints. `null` means no number is linked to the account.
+        phoneNumber: user.phoneNumber ? maskPhoneNumber(user.phoneNumber) : null,
+        phoneVerified: Boolean(user.phoneVerified),
+        hasGoogle: Boolean(user.googleId),
         activeSessions,
         totalSessions,
       },

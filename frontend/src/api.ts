@@ -687,6 +687,11 @@ export interface UserActivity {
     isVerified: boolean;
     createdAt: string;
     lastLoginAt: string | null;
+    /** Masked phone number, or null when no number is linked. */
+    phoneNumber: string | null;
+    phoneVerified: boolean;
+    /** True when the account signs in with Google (possibly alongside a password). */
+    hasGoogle: boolean;
     activeSessions: number;
     totalSessions: number;
   };
