@@ -26,11 +26,30 @@ import { ensureDefaultAdmin } from "./utils/ensureDefaultAdmin.js";
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-// Trust proxy configuration: set TRUST_PROXY=1 (hop count), "loopback", or an
-// IP/CIDR list when deployed behind a reverse proxy. Express then safely
-// derives req.ip from X-Forwarded-For; without it, spoofed XFF headers are ignored.
+// Trust proxy configuration: set TRUST_PROXY to a hop count ("1", "2"…), a
+// comma-separated IP/CIDR allow-list of known proxies, "loopback", or "true"
+// (alias for 1). Express then safely derives req.ip from X-Forwarded-For;
+// without it, spoofed XFF headers are ignored.
+//
+// NOTE the string/number trap: Express reads a NUMBER as a hop count but a
+// STRING as an IP/CIDR allow-list — the literal string "2" trusts nothing
+// (no address matches an allow-list of "2"), leaving req.ip as the socket
+// address. Numeric strings must therefore be converted to numbers here.
+//
+// For this deployment the recommended value is a subnet list covering every
+// proxy on the chain (Render's forwarder is loopback, Render's balancers are
+// 10/8, Render fronts via Cloudflare, and Vercel/Netlify egress through AWS
+// + CGNAT ranges), because the Vercel, Netlify, and direct paths have
+// DIFFERENT hop counts and client-supplied XFF entries survive the whole
+// chain — trusting by subnet stops the walk exactly at the real client and
+// drops spoofed entries; a hop count can do only one of the two.
 if (process.env.TRUST_PROXY) {
-  app.set("trust proxy", process.env.TRUST_PROXY === "true" ? 1 : process.env.TRUST_PROXY);
+  const raw = String(process.env.TRUST_PROXY).trim();
+  const asNumber = raw === "" ? NaN : Number(raw);
+  app.set(
+    "trust proxy",
+    raw === "true" ? 1 : Number.isFinite(asNumber) ? asNumber : raw,
+  );
 }
 
 // Initialize passport configuration
