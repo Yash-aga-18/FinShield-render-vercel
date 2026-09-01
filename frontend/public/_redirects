@@ -1,0 +1,6 @@
+# Mirrors netlify.toml — kept in public/ so Vite copies it into dist/ and
+# Netlify sees it no matter how the site's base directory is configured.
+# Same-origin API proxy (200 = transparent rewrite, cookies/CSRF stay
+# same-origin) + SPA history fallback for deep links like /login.
+/api/*  https://finshield-api-ydgr.onrender.com/api/:splat  200!
+/*      /index.html                                             200

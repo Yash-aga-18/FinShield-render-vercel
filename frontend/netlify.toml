@@ -1,0 +1,26 @@
+# Netlify mirror of the Vercel deployment: same-origin proxy to the Render
+# backend plus an SPA fallback. The app reads API_BASE from VITE_API_URL, but
+# that must stay UNSET here too — auth cookies are SameSite=Strict and the CSRF
+# token is read from document.cookie, so every request has to leave from this
+# site's own origin and be proxied, never sent cross-origin to Render directly.
+# Do not add VITE_API_URL in Netlify's environment settings.
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# Proxy API calls to the Render backend (status 200 = transparent rewrite —
+# the browser keeps seeing the Netlify origin, so cookies/CSRF behave exactly
+# as on Vercel). `force = true` because Netlify would otherwise prefer its own
+# 404 for paths that match no static file.
+[[redirects]]
+  from = "/api/*"
+  to = "https://finshield-api-ydgr.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+# SPA history fallback: without this, deep links like /login 404 on refresh.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
