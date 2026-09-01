@@ -79,7 +79,7 @@ export default function Layout() {
   return (
     <div className="relative z-1 min-h-screen">
       <header className="border-b border-rule bg-paper/90 backdrop-blur-[2px]">
-        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
+        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-6">
           <Brand />
           <nav className="flex items-center gap-5">
             {links.map((l) => (
@@ -206,11 +206,11 @@ export default function Layout() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl px-6 py-12">
+      <main className="mx-auto max-w-6xl px-6 py-12">
         <Outlet />
       </main>
 
-      <footer className="mx-auto max-w-5xl px-6 pb-8">
+      <footer className="mx-auto max-w-6xl px-6 pb-8">
         <p className="border-t border-rule pt-4 text-xs text-ink-faint">
           FinShield Security Center — every action on this page is audit-logged. You are signed out
           automatically after 15 minutes of inactivity.
