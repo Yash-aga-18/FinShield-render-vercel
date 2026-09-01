@@ -185,6 +185,12 @@ function ActivityDrawer({
                 </p>
               </div>
               <div className="rounded-sm border border-rule p-3">
+                <p className="text-xs text-ink-faint uppercase">Risk score</p>
+                <p className="mt-1">
+                  <RiskCell score={activity.user.riskScore} level={activity.user.riskLevel} />
+                </p>
+              </div>
+              <div className="rounded-sm border border-rule p-3">
                 <p className="text-xs text-ink-faint uppercase">Account created</p>
                 <p className="mt-1 text-sm text-ink">{formatDateTime(activity.user.createdAt)}</p>
               </div>

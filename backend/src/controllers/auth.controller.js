@@ -289,9 +289,15 @@ export const provisionUserSession = async ({
       riskLevel: risk.level,
     });
 
-    // Last-login stamp for the admin panel's user activity view. Best-effort:
-    // a failure here must not fail the login itself.
-    await User.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } }).catch(() => {});
+    // Last-login stamp + account-level risk for the admin panel's user
+    // views. The risk lives on the USER as well as the session so accounts
+    // with no active sessions still show the score of their most recent
+    // sign-in instead of a blank. Best-effort: a failure here must not
+    // fail the login itself.
+    await User.updateOne(
+      { _id: user._id },
+      { $set: { lastLoginAt: new Date(), riskScore: risk.score, riskLevel: risk.level } },
+    ).catch(() => {});
 
     if (redisClient?.isOpen) {
       await redisClient.setEx(
@@ -520,6 +526,17 @@ export const register = async (req, res) => {
       }
       throw new Error(`OTP issue failed: ${otp.error}`);
     } catch (createOrOtpError) {
+      // Lost the race: another registration with this email committed
+      // between our findOne and the create. The unique index is the real
+      // guarantee — this just turns the collision into an honest 409
+      // instead of a misleading "email delivery failed".
+      if (createOrOtpError?.code === 11000) {
+        return res.status(409).json({
+          success: false,
+          error: "EMAIL_ALREADY_EXISTS",
+          message: "An account with this email already exists",
+        });
+      }
       // The account exists but the verification email could not be delivered
       // (provider outage, invalid recipient). An unusable husk would trap the
       // email behind "already exists" forever — roll the record back and say

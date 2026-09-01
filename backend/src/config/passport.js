@@ -46,14 +46,31 @@ export const configurePassport = () => {
             return done(null, user);
           }
 
-          user = await User.create({
-            name,
-            email,
-            googleId,
-            passwordHash: null,
-            // Google already proved ownership of this email.
-            isVerified: true,
-          });
+          try {
+            user = await User.create({
+              name,
+              email,
+              googleId,
+              passwordHash: null,
+              // Google already proved ownership of this email.
+              isVerified: true,
+            });
+          } catch (createError) {
+            // Lost a race with a concurrent registration or Google sign-in
+            // on the same email — the unique index caught it. Re-fetch the
+            // winner and link this Google account to it instead of failing.
+            if (createError?.code !== 11000) {
+              throw createError;
+            }
+            user = await User.findOne({ email });
+            if (!user) {
+              throw createError;
+            }
+            user.googleId = googleId;
+            if (!user.name) user.name = name;
+            user.isVerified = true;
+            await user.save();
+          }
 
           return done(null, user);
         } catch (error) {

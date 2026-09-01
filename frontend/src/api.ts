@@ -692,6 +692,9 @@ export interface UserActivity {
     phoneVerified: boolean;
     /** True when the account signs in with Google (possibly alongside a password). */
     hasGoogle: boolean;
+    /** Account-level risk from the most recent sign-in (0/LOW when no history). */
+    riskScore: number;
+    riskLevel: string;
     activeSessions: number;
     totalSessions: number;
   };

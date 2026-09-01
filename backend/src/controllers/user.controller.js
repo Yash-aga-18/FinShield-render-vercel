@@ -12,6 +12,7 @@ import { acquireRedisLock, releaseRedisLock } from "../utils/redisLock.js";
 import { userSessionLockKey, markSessionRevokedInRedis, maskPhoneNumber } from "../utils/security.js";
 import { redisClient } from "../config/redis.js";
 import { numberFromEnv } from "../utils/env.js";
+import { getRiskLevel } from "../utils/risk.js";
 import { NAME_MIN_LENGTH, NAME_MAX_LENGTH } from "../utils/namePolicy.js";
 import { PASSWORD_MIN_LENGTH, PASSWORD_MAX_LENGTH } from "../utils/passwordPolicy.js";
 import { issueOtp, verifyOtp, verifyStepUpToken, stepUpCookieName, OtpError, OTP_TTL_SECONDS } from "../utils/otp.js";
@@ -158,7 +159,7 @@ export const getUserActivity = async (req, res, next) => {
     );
 
     const user = await User.findById(id)
-      .select("name email role isVerified createdAt lastLoginAt phoneNumber phoneVerified googleId")
+      .select("name email role isVerified createdAt lastLoginAt phoneNumber phoneVerified googleId riskScore riskLevel")
       .lean();
 
     if (!user) {
@@ -190,6 +191,10 @@ export const getUserActivity = async (req, res, next) => {
         phoneNumber: user.phoneNumber ? maskPhoneNumber(user.phoneNumber) : null,
         phoneVerified: Boolean(user.phoneVerified),
         hasGoogle: Boolean(user.googleId),
+        // Account-level risk from the most recent sign-in (0/LOW for
+        // accounts that never signed in or predate the field).
+        riskScore: user.riskScore ?? 0,
+        riskLevel: user.riskLevel ?? "LOW",
         activeSessions,
         totalSessions,
       },
@@ -1310,9 +1315,8 @@ export const getAllUsers = async (req, res, next) => {
           $addFields: {
             activeSessions: { $size: "$activeSessionDocs" },
             // The highest-risk active session. Sessions created before risk
-            // was stored carry no score — they're filtered out, so a user
-            // whose only sessions are old ones shows null (rendered as an
-            // em dash) instead of a guessed 0.
+            // was stored carry no score and are filtered out here; the
+            // account-level score on the user covers that gap below.
             topRiskSession: {
               $arrayElemAt: [
                 {
@@ -1334,8 +1338,17 @@ export const getAllUsers = async (req, res, next) => {
         },
         {
           $addFields: {
-            riskScore: { $ifNull: ["$topRiskSession.riskScore", null] },
-            riskLevel: { $ifNull: ["$topRiskSession.riskLevel", null] },
+            // The account's risk: the higher of the riskiest ACTIVE session
+            // and the score bound to the user (their most recent sign-in).
+            // Always a number — an account with no sign-in history at all
+            // shows 0/LOW instead of a blank cell. The level is recomputed
+            // from the final score in JS below so the two can never disagree.
+            riskScore: {
+              $max: [
+                { $ifNull: ["$topRiskSession.riskScore", 0] },
+                { $ifNull: ["$riskScore", 0] },
+              ],
+            },
           },
         },
         {
@@ -1363,7 +1376,16 @@ export const getAllUsers = async (req, res, next) => {
       order: req.query?.order === "asc" ? "asc" : "desc",
       total,
       totalPages: Math.ceil(total / limit),
-      users: rows.map((u) => withMaskedPhone({ ...u, id: String(u._id) })),
+      users: rows.map((u) =>
+        withMaskedPhone({
+          ...u,
+          id: String(u._id),
+          // Level derived from the final score with the same thresholds the
+          // risk engine uses, so score and level always agree.
+          riskScore: u.riskScore ?? 0,
+          riskLevel: getRiskLevel(u.riskScore ?? 0),
+        }),
+      ),
     });
   } catch (error) {
     next(error);

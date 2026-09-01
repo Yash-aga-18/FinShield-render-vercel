@@ -84,6 +84,22 @@ const userSchema = new mongoose.Schema({
       type: Date,
       default: null,
     },
+
+    // Account-level risk: the score of the sign-in that most recently
+    // admitted a session. BOUND TO THE USER (not just the session) so the
+    // admin panel shows a score for accounts with no active sessions too.
+    // Default 0/LOW — an account with no sign-in history has no risk.
+    riskScore: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100,
+    },
+    riskLevel: {
+      type: String,
+      enum: ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+      default: "LOW",
+    },
 },
 { timestamps: true }
 

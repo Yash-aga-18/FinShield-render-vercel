@@ -35,7 +35,7 @@ export const RISK_ACTION = Object.freeze({
   REVOKE_AND_BLOCK: "REVOKE_AND_BLOCK",
 });
 
-const getRiskLevel = (score) => {
+export const getRiskLevel = (score) => {
   if (score >= THRESHOLDS.CRITICAL) return RISK_LEVEL.CRITICAL;
   if (score >= THRESHOLDS.HIGH) return RISK_LEVEL.HIGH;
   if (score >= THRESHOLDS.MEDIUM) return RISK_LEVEL.MEDIUM;
