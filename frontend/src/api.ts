@@ -53,6 +53,15 @@ export class ApiError extends Error {
   }
 }
 
+/* Single knob for where the backend lives — every request in the app goes
+   through this. Empty by default: calls use relative paths and hit the same
+   origin that serves the page (the Vite dev proxy forwards /api to Express
+   locally; vercel.json rewrites forward it in production). Set VITE_API_URL
+   to point elsewhere — but leave it EMPTY for this app: auth cookies are
+   SameSite=Strict and the CSRF token is read from a same-origin cookie, so
+   the backend must be reached through the frontend's own origin. */
+export const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "");
+
 function getCookie(name: string): string | null {
   const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
   return match ? decodeURIComponent(match[1]) : null;
@@ -61,7 +70,7 @@ function getCookie(name: string): string | null {
 async function ensureCsrfToken(): Promise<string | null> {
   let token = getCookie("csrf_token");
   if (!token) {
-    await fetch("/api/auth/csrf-token", { credentials: "include" });
+    await fetch(`${API_BASE}/api/auth/csrf-token`, { credentials: "include" });
     token = getCookie("csrf_token");
   }
   return token;
@@ -95,7 +104,7 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
     if (csrf) headers["x-csrf-token"] = csrf;
   }
 
-  const res = await fetch(path, {
+  const res = await fetch(API_BASE + path, {
     method,
     credentials: "include",
     headers: body !== undefined ? { ...headers, "Content-Type": "application/json" } : headers,
@@ -121,7 +130,7 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
     !path.includes("/api/auth/refresh") &&
     TOKEN_LEVEL_401_ERRORS.has(payload?.error ?? "")
   ) {
-    const refreshed = await fetch("/api/auth/refresh", {
+    const refreshed = await fetch(`${API_BASE}/api/auth/refresh`, {
       method: "POST",
       credentials: "include",
       headers: await (async () => {

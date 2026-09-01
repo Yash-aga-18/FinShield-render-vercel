@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "./auth";
+import { API_BASE } from "./api";
 
 /* 15-minute auto-logout (strict policy):
    - The timer resets ONLY on a full page refresh or when the user navigates
@@ -62,7 +63,7 @@ export function useIdleAutoLogout(resetKey?: string) {
   async function staySignedIn() {
     // Any authenticated call refreshes activity; /api/users/me is cheap.
     try {
-      await fetch("/api/users/me", { credentials: "include" });
+      await fetch(`${API_BASE}/api/users/me`, { credentials: "include" });
     } catch {
       /* network hiccup — still reset the local timer */
     }
