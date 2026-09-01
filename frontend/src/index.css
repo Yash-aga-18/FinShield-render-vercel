@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+/*
+  FinShield design system — "Paper & Ink"
+  Warm ivory paper, near-black ink, deep forest green accent.
+  Editorial serif display (Fraunces) + Inter body + JetBrains Mono for data.
+*/
+
+@theme {
+  --color-paper: #faf7f2;
+  --color-paper-raised: #ffffff;
+  --color-paper-sunken: #f1ece3;
+  --color-ink: #1c1a17;
+  --color-ink-soft: #57524a;
+  --color-ink-faint: #8a8378;
+  --color-rule: #e3ddd2;
+  --color-rule-strong: #c9c1b2;
+  --color-accent: #1a4a3a;
+  --color-accent-strong: #1c7950;
+  --color-accent-soft: #e8efe9;
+  --color-amber-stamp: #8a5a12;
+  --color-amber-soft: #f6ecd8;
+  --color-red-stamp: #8c2f24;
+  --color-red-deep: #6b1f16;
+  --color-red-soft: #f5e2de;
+
+  --font-display: "Fraunces", Georgia, serif;
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+}
+
+html {
+  background: var(--color-paper);
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Subtle paper grain */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.35;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.03 0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+::selection {
+  background: var(--color-accent);
+  color: var(--color-paper);
+}
+
+/* Tabular figures for any numeric data */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Small outlined "stamp" label — used for risk badges */
+.stamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-xs);
+  line-height: 1.4;
+}
+
+input,
+button {
+  font: inherit;
+}
+
+/* Underline links like editorial text */
+.link {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.link:hover {
+  text-decoration-thickness: 2px;
+}
