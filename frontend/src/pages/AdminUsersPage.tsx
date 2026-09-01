@@ -447,9 +447,10 @@ export default function AdminUsersPage() {
     try {
       await stepUp.run(
         async () => {
-          // Dual-channel: when the acting admin has a verified phone, the
-          // emailed step-up code is followed by a texted one — the texted
-          // code goes to the ADMIN's phone, the final word on deletion.
+          // Dual-channel: when the acting admin has a verified phone and the
+          // deletion risk warrants it, the emailed step-up code is followed by
+          // a texted one — the texted code goes to the ADMIN's phone, the
+          // final word on deletion.
           const res = await adminDeleteUser(target.id);
           if (res.requireOtp) {
             setDeleteSms({ target, challenge: res });
@@ -459,6 +460,9 @@ export default function AdminUsersPage() {
         },
         `You're about to permanently delete ${target.email}.`,
         `delete the user ${target.email} (account id ${target.id})`,
+        // Irreversible: the emailed half is asked for every time, not only
+        // when the 5-minute step-up window has lapsed.
+        { always: true },
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete user");

@@ -285,8 +285,10 @@ export default function ProfilePage() {
   async function onDelete() {
     setConfirmDelete(false);
     try {
-      // Irreversible: the emailed code first (stepUp.run), then — when a
-      // verified phone is on file — a texted code as the final word.
+      // Irreversible, so the emailed code is asked for EVERY time (not only
+      // when the 5-minute step-up window has lapsed): email OTP window →
+      // verify → then, when a verified phone is on file, the texted code as
+      // the final word → account deleted → back to the sign-in screen.
       await stepUp.run(
         async () => {
           const res = await deleteProfile();
@@ -298,6 +300,7 @@ export default function ProfilePage() {
         },
         "You're about to permanently delete your account.",
         "permanently delete your account",
+        { always: true },
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Delete failed");

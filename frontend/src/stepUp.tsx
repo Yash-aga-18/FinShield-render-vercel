@@ -191,10 +191,23 @@ export function useStepUp() {
   // Kick off a sensitive action; intercept the STEP_UP_REQUIRED error.
   // emailAction (optional) names the action in the emailed OTP, e.g.
   // "delete user x@y.com" instead of a generic "sensitive action".
+  // opts.always: open the emailed-code dialog WITHOUT probing the endpoint
+  // first — for irreversible actions (deletion) the emailed half is shown
+  // every time, not only when the 5-minute step-up cookie happens to be
+  // absent. The action still runs only after the code is confirmed.
   const run = useCallback(
-    async (action: () => Promise<void>, actionContext: string, actionLabel?: string) => {
+    async (
+      action: () => Promise<void>,
+      actionContext: string,
+      actionLabel?: string,
+      opts?: { always?: boolean },
+    ) => {
       setContext(actionContext);
       setEmailAction(actionLabel);
+      if (opts?.always) {
+        setPending(() => action);
+        return;
+      }
       try {
         await action();
       } catch (err) {
